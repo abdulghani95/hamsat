@@ -1,10 +1,4 @@
-/*
- * إعدادات الخادم (Firebase). اتبع ملف SETUP.md ثم ألصق القيمتين هنا بين علامتي الاقتباس.
- *   apiKey      : من Firebase → Project settings → General → Web API Key
- *   databaseURL : من Firebase → Realtime Database (الرابط الظاهر أعلى الصفحة)
- * هذان المفتاحان ليسا سرّيين، وحماية البيانات تتم عبر قواعد الأمان في database.rules.json.
- */
 window.HAMSA_CONFIG = {
-  apiKey: 'PASTE_YOUR_API_KEY',
-  databaseURL: 'PASTE_YOUR_DATABASE_URL',
+  apiKey: 'AIzaSyCm9U1UaDEbeZFYPCxFIZTj3y67vrwMvvI',
+  databaseURL: 'https://hamsa-d4b55-default-rtdb.europe-west1.firebasedatabase.app',
 };
