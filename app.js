@@ -31,6 +31,8 @@
   let tickTimer = null;
   let lastSig = '';
   let lastPoll = 0;
+  let lastInboxPoll = 0;
+  let lastChatPoll = 0;
   let lastTypingWrite = 0;
   let V = null; // status viewer state
   let rec = null; // voice recording state
@@ -351,6 +353,17 @@
       onState: (s) => setConn('inbox', s === 'online'),
     });
     statusStream = API.stream('statuses/' + me.uid, '', { onData: onMyStatuses });
+  }
+  function restartStreams() {
+    if (!me || !inboxStream) return;
+    inboxStream.close();
+    if (statusStream) statusStream.close();
+    inboxStream = API.stream('inbox/' + me.uid, '', { onData: onInbox, onState: (st) => setConn('inbox', st === 'online') });
+    statusStream = API.stream('statuses/' + me.uid, '', { onData: onMyStatuses });
+    const c = cur();
+    if (c) startChatStream(c);
+    lastInboxPoll = 0;
+    lastChatPoll = 0;
   }
   function stopStreams() {
     if (inboxStream) inboxStream.close();
@@ -817,6 +830,15 @@
     const s = API.session();
     if (s && s.refreshToken && s.refreshToken !== me.rt) saveSession();
     if (now - lastPoll > POLL_MS) pollStatuses();
+    if (now - lastInboxPoll > 8000) {
+      lastInboxPoll = now;
+      API.get('inbox/' + me.uid).then((t) => { if (me) onInbox(t); }).catch(ignore);
+    }
+    if (c && now - lastChatPoll > 4000) {
+      lastChatPoll = now;
+      const id = c.id;
+      API.get('chats/' + L.chatId(me.uid, c.uid), CHAT_QUERY).then((t) => { const k = cur(); if (me && k && k.id === id) onChatData(k, t); }).catch(ignore);
+    }
 
     if (changed) renderAll(false);
     else updateCountdowns();
@@ -1484,6 +1506,9 @@
 
   function boot() {
     bind();
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) restartStreams(); });
+    window.addEventListener('online', restartStreams);
+    window.addEventListener('pageshow', (e) => { if (e.persisted) restartStreams(); });
     try { localStorage.removeItem('hamsa.v1'); localStorage.removeItem('hamsa.status.v1'); } catch (e) { /* ignore */ }
     setAuthMode('signup');
     if (!API.configured()) {
