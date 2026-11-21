@@ -1,0 +1,64 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "users": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "private": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "handles": {
+      "$handle": {
+        ".read": "auth != null",
+        ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+      }
+    },
+
+    "phones": {
+      "$key": {
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.val() === auth.uid) || (data.val() === auth.uid && (!newData.exists() || newData.val() === auth.uid)))"
+      }
+    },
+
+    "inbox": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$peer": {
+          ".write": "auth != null && (auth.uid === $uid || auth.uid === $peer)"
+        }
+      }
+    },
+
+    "chats": {
+      "$cid": {
+        ".read": "auth != null && $cid.matches(/^[A-Za-z0-9]{28}_[A-Za-z0-9]{28}$/) && ($cid.beginsWith(auth.uid) || $cid.endsWith(auth.uid))",
+        ".write": "auth != null && $cid.matches(/^[A-Za-z0-9]{28}_[A-Za-z0-9]{28}$/) && ($cid.beginsWith(auth.uid) || $cid.endsWith(auth.uid))"
+      }
+    },
+
+    "statuses": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        "$sid": {
+          "views": {
+            "$viewer": {
+              ".write": "auth != null && auth.uid === $viewer"
+            }
+          }
+        }
+      }
+    }
+  }
+}

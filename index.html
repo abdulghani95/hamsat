@@ -34,6 +34,15 @@
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/></symbol>
     <symbol id="i-id" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></symbol>
     <symbol id="i-aura" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="8.5"/></symbol>
+    <symbol id="i-status" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" stroke-dasharray="3.2 2.6"/><circle cx="12" cy="12" r="3.2"/></symbol>
+    <symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3 19c.6-3.2 3-4.8 6-4.8s5.4 1.6 6 4.8"/><path d="M16 5.6a3 3 0 010 5.8M17.5 14.6c2 .5 3.2 2 3.5 4.4"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4.5h4V7M7 7l.8 12h8.4L17 7M10.5 11v5M13.5 11v5"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3M9 21h6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
   </defs>
 </svg>
 
@@ -52,31 +61,63 @@
       <h1 id="authTitle">مراسلة بلا رقم هاتف</h1>
       <p class="lead">هويتك اسم مستخدم فقط. رسائلك تبقى بالمدة التي تختارها، وتختفي حين تقرر.</p>
 
+      <div class="seg" role="tablist" aria-label="نوع الدخول">
+        <button type="button" id="segSignup" role="tab" aria-selected="true">حساب جديد</button>
+        <button type="button" id="segLogin" role="tab" aria-selected="false">تسجيل الدخول</button>
+      </div>
+
       <form id="authForm" class="card form" novalidate>
-        <label for="nameInput">الاسم الظاهر</label>
-        <input id="nameInput" name="name" type="text" autocomplete="nickname" maxlength="24" value="نور" required>
+        <div id="nameRow" class="field">
+          <label for="nameInput">الاسم الظاهر</label>
+          <input id="nameInput" name="name" type="text" autocomplete="nickname" maxlength="24" required>
+        </div>
 
         <label for="handleInput">اسم المستخدم</label>
         <div class="at-field">
           <span class="at" aria-hidden="true">@</span>
           <input id="handleInput" name="handle" type="text" dir="ltr" inputmode="text" autocomplete="username"
-                 autocapitalize="none" spellcheck="false" maxlength="21" value="nour.violet" required aria-describedby="authErr">
+                 autocapitalize="none" spellcheck="false" maxlength="21" required aria-describedby="authErr">
         </div>
-        <p id="authErr" class="err" role="alert" hidden></p>
 
-        <button id="authSubmit" class="btn primary" type="submit">أنشئ هويتي</button>
-        <p class="fine">لا نطلب رقم هاتف ولا بريدًا. نولّد لك رمز استعادة سريًا بدلًا منهما.</p>
+        <label for="passInput">كلمة المرور</label>
+        <input id="passInput" name="password" type="password" dir="ltr" autocomplete="new-password" maxlength="128" required>
+
+        <p id="authErr" class="err" role="alert" hidden></p>
+        <button id="authSubmit" class="btn primary" type="submit">أنشئ حسابي</button>
+        <p id="authFine" class="fine">لا نطلب رقم هاتف ولا بريدًا. احتفظ بكلمة المرور، فلا يمكن استعادتها.</p>
       </form>
+      <p id="cfgWarn" class="warn" role="alert" hidden>لم يُربط التطبيق بالخادم بعد. افتح ملف <b dir="ltr">config.js</b> وألصق مفاتيح Firebase فيه، واتبع دليل الإعداد.</p>
     </div>
 
     <ul class="feats" aria-label="مميزات همسة">
-      <li><svg class="i"><use href="#i-id"/></svg><div><b>بلا رقم ولا بريد</b><span>هويتك @اسم_مستخدم ورمز استعادة، ولا شيء آخر.</span></div></li>
+      <li><svg class="i"><use href="#i-id"/></svg><div><b>بلا رقم ولا بريد</b><span>هويتك @اسم_مستخدم وكلمة مرور، ورقم الهاتف اختياري.</span></div></li>
       <li><svg class="i"><use href="#i-timer"/></svg><div><b>رسائل تتلاشى</b><span>تختار المدة، فتختفي الرسالة من المحادثة.</span></div></li>
       <li><svg class="i"><use href="#i-hourglass"/></svg><div><b>كبسولة زمنية</b><span>ترسل الآن، وتُفتح في الوقت الذي تحدده.</span></div></li>
       <li><svg class="i"><use href="#i-flame"/></svg><div><b>رسائل سرية تُحرق</b><span>تظهر مموّهة وتُقرأ مرة واحدة ثم تحترق.</span></div></li>
       <li><svg class="i"><use href="#i-ghost"/></svg><div><b>وضع الشبح</b><span>اقرأ واكتب دون أن يظهر أثرك للآخرين.</span></div></li>
       <li><svg class="i"><use href="#i-aura"/></svg><div><b>هالة المزاج</b><span>حلقة ملونة حول صورتك تحكي كيف تشعر اليوم.</span></div></li>
     </ul>
+  </div>
+</section>
+
+
+<section id="splash" class="auth-wrap" hidden aria-live="polite">
+  <div class="auth">
+    <div class="auth-main">
+      <div class="brand brand-lg">
+        <svg class="logo" viewBox="0 0 40 40" aria-hidden="true">
+          <rect x="3" y="4" width="34" height="27" rx="11" fill="currentColor"/>
+          <path d="M13 30l-4 7 11-7z" fill="currentColor"/>
+          <path d="M12.5 17.5c2-3 4.2-3 6 0s4 3 6 0" fill="none" stroke="var(--logo-ink)" stroke-width="2.4" stroke-linecap="round"/>
+        </svg>
+        <span class="brand-name">همسة</span>
+      </div>
+      <p id="splashMsg" class="lead">جارٍ الاتصال…</p>
+      <div class="row-actions">
+        <button id="splashRetry" class="btn primary" type="button" hidden>إعادة المحاولة</button>
+        <button id="splashOut" class="btn quiet" type="button" hidden>تسجيل الخروج</button>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -94,11 +135,39 @@
       </div>
       <button id="meBtn" class="av-btn" type="button" aria-label="ملفي الشخصي والإعدادات"></button>
     </header>
-    <div class="search">
-      <svg class="i"><use href="#i-search"/></svg>
-      <input id="q" type="search" placeholder="ابحث أو أضف @اسم_مستخدم" autocomplete="off" aria-label="بحث أو إضافة جهة اتصال">
+    <div id="connBar" class="banner conn" role="status" hidden>
+      <svg class="i"><use href="#i-timer"/></svg>
+      <span>جارٍ الاتصال بالخادم… الرسائل الجديدة ستصل عند عودة الاتصال.</span>
     </div>
-    <div id="rows" class="rows" role="list"></div>
+
+    <div id="panelChats" class="panel" role="tabpanel" aria-label="المحادثات">
+      <div class="search">
+        <svg class="i"><use href="#i-search"/></svg>
+        <input id="q" type="search" placeholder="ابحث في محادثاتك" autocomplete="off" aria-label="بحث في المحادثات">
+      </div>
+      <div id="rows" class="rows" role="list"></div>
+    </div>
+
+    <div id="panelStatus" class="panel scroll" role="tabpanel" aria-label="الحالة" hidden>
+      <div id="stMine"></div>
+      <div class="sh-title pad">آخر التحديثات</div>
+      <div id="stRows" class="rows" role="list"></div>
+    </div>
+
+    <div id="panelPeople" class="panel scroll" role="tabpanel" aria-label="أشخاص" hidden>
+      <div class="search">
+        <svg class="i"><use href="#i-search"/></svg>
+        <input id="pq" type="search" placeholder="اسم المستخدم أو رقم الهاتف مع +" autocomplete="off" autocapitalize="none" aria-label="البحث عن شخص">
+        <button type="button" id="pGo" class="addbtn" aria-label="بحث">بحث</button>
+      </div>
+      <div id="pRows" class="rows" role="list"></div>
+    </div>
+
+    <nav id="tabs" class="tabs" role="tablist" aria-label="الأقسام">
+      <button type="button" class="tab" role="tab" data-tab="chats" aria-selected="true"><span class="pill"><svg class="i"><use href="#i-chat"/></svg></span><span>المحادثات</span><span id="tabBadge" class="badge" hidden></span></button>
+      <button type="button" class="tab" role="tab" data-tab="status" aria-selected="false"><span class="pill"><svg class="i"><use href="#i-status"/></svg></span><span>الحالة</span><span id="tabDot" class="dot" hidden></span></button>
+      <button type="button" class="tab" role="tab" data-tab="people" aria-selected="false"><span class="pill"><svg class="i"><use href="#i-people"/></svg></span><span>أشخاص</span></button>
+    </nav>
   </aside>
 
   <section class="chat" aria-label="المحادثة">
@@ -125,9 +194,18 @@
         <div id="modes" class="modes" role="group" aria-label="نوع الرسالة"></div>
         <div id="opts" class="opts"></div>
         <form id="sendForm" class="inputrow" autocomplete="off">
+          <button id="attachBtn" class="icon-btn" type="button" aria-label="إرسال صورة"><svg class="i"><use href="#i-image"/></svg></button>
           <input id="msg" type="text" enterkeyhint="send" placeholder="اكتب رسالة" aria-label="نص الرسالة" autocomplete="off">
+          <button id="micBtn" class="icon-btn" type="button" aria-label="تسجيل رسالة صوتية"><svg class="i"><use href="#i-mic"/></svg></button>
           <button id="sendBtn" class="send" type="submit" aria-label="إرسال"><svg class="i flip"><use href="#i-send"/></svg></button>
         </form>
+        <div id="recBar" class="recbar" hidden>
+          <button id="recCancel" class="icon-btn" type="button" aria-label="إلغاء التسجيل"><svg class="i"><use href="#i-trash"/></svg></button>
+          <span class="recdot" aria-hidden="true"></span>
+          <b id="recTime" class="rectime">0:00</b>
+          <span class="rechint">جارٍ التسجيل</span>
+          <button id="recSend" class="send" type="button" aria-label="إرسال التسجيل"><svg class="i flip"><use href="#i-send"/></svg></button>
+        </div>
       </div>
     </div>
   </section>
@@ -138,9 +216,25 @@
   <div id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" tabindex="-1"></div>
 </div>
 
+<!-- ───────── Status viewer ───────── -->
+<div id="viewer" class="viewer" role="dialog" aria-modal="true" aria-label="عرض الحالة" hidden>
+  <div id="vBars" class="v-bars"></div>
+  <div id="vHead" class="v-head"></div>
+  <div id="vBody" class="v-body"></div>
+  <button id="vNext" class="v-zone v-next" type="button" aria-label="الحالة التالية"></button>
+  <button id="vPrev" class="v-zone v-prev" type="button" aria-label="الحالة السابقة"></button>
+  <div id="vFoot" class="v-foot"></div>
+</div>
+
+<input id="avatarFile" type="file" accept="image/*" hidden aria-label="اختيار صورة شخصية">
+<input id="statusFile" type="file" accept="image/*" hidden aria-label="اختيار صورة للحالة">
+<input id="chatFile" type="file" accept="image/*" hidden aria-label="اختيار صورة لإرسالها">
+
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="logic.js"></script>
+<script src="api.js"></script>
+<script src="config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
