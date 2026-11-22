@@ -1958,6 +1958,16 @@
 
   function boot() {
     bind();
+    // In the Android app the system back button is handled here, so it closes one layer instead of leaving the app.
+    const capApp = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if (capApp && capApp.addListener) {
+      capApp.addListener('backButton', () => {
+        const top = navStack[navStack.length - 1];
+        if (top) { navClose(top.k); return; }
+        if (me && $('#main').dataset.view === 'chat') { closeChat(); return; }
+        if (capApp.exitApp) capApp.exitApp();
+      });
+    }
     document.addEventListener('visibilitychange', () => { if (!document.hidden) restartStreams(); });
     window.addEventListener('online', restartStreams);
     window.addEventListener('pageshow', (e) => { if (e.persisted) restartStreams(); });
