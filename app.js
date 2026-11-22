@@ -23,15 +23,19 @@
   let active = null;
   let ghost = false;
   let hidePreview = false;
+  let notifOn = false;
   let mode = 'plain';
   let tab = 'chats';
   let sheetMode = 'profile';
-  let draft = { kind: 'text', bg: 0, text: '', img: null };
+  let draft = { kind: 'text', bg: 0, text: '', img: null, vid: null, dur: 0 };
   let confirmLogout = false;
   let tickTimer = null;
   let lastSig = '';
   let lastPoll = 0;
   let lastInboxPoll = 0;
+  let writeSeq = 0; // bumps on every local write, so a slow poll answer cannot overwrite newer local state
+  let inboxEvt = 0;
+  let chatEvt = 0;
   let lastChatPoll = 0;
   let lastTypingWrite = 0;
   let V = null; // status viewer state
@@ -40,6 +44,10 @@
   let authMode = 'signup';
   let authBusy = false;
   let inboxStream = null;
+  let ringStream = null;
+  let call = null; // active or ringing call
+  let videoBusy = false;
+  let lastMsgCount = -1;
   let chatStream = null;
   let statusStream = null;
   let inboxLoaded = false;
@@ -67,7 +75,7 @@
         refreshToken: me.rt,
         profile: { name: me.name, handle: me.handle, mood: me.mood, photo: me.photo },
         phone: me.phone || null,
-        ghost, hidePreview,
+        ghost, hidePreview, notif: notifOn,
         seenStore: me.seenStore,
       }));
     } catch (e) { /* storage unavailable: the app still works for this session */ }
@@ -86,12 +94,12 @@
     try { return new Date(t).toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' }); }
     catch (e) { return ''; }
   }
-  function toast(text) {
+  function toast(text, ms) {
     const el = $('#toast');
     el.textContent = text;
     el.hidden = false;
     clearTimeout(toast.t);
-    toast.t = setTimeout(() => { el.hidden = true; }, 3200);
+    toast.t = setTimeout(() => { el.hidden = true; }, ms || 3200);
   }
   function avatar(name, moodKey, cls, photo) {
     const color = (L.MOODS[moodKey] || L.MOODS.creative).color;
@@ -152,6 +160,108 @@
     return c.toDataURL('image/jpeg', o.quality || 0.8);
   }
 
+  /* ───────── video clips: short, re-encoded small so they fit the free database ───────── */
+  const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error('read'));
+    r.readAsDataURL(blob);
+  });
+  function loadVideo(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.preload = 'auto';
+      v.playsInline = true;
+      v.muted = true;
+      const fail = () => { URL.revokeObjectURL(url); reject(new Error('bad video')); };
+      v.onerror = fail;
+      v.onloadedmetadata = () => {
+        if (isFinite(v.duration)) { resolve({ v, url }); return; }
+        // clips recorded in the browser report no length until the end is reached
+        v.onseeked = null;
+        v.ontimeupdate = () => {
+          if (!isFinite(v.duration)) return;
+          v.ontimeupdate = null;
+          v.currentTime = 0;
+          resolve({ v, url });
+        };
+        v.currentTime = 1e7;
+      };
+      v.src = url;
+    });
+  }
+  async function videoToClip(file, maxSec) {
+    if (!file || !/^video\//.test(file.type)) throw new Error('not a video');
+    if (file.size > 400 * 1024 * 1024) throw new Error('too big');
+    const { v, url } = await loadVideo(file);
+    try {
+      const dur = Math.min(v.duration, maxSec);
+      if (!(dur > 0)) throw new Error('empty');
+      if (file.size <= 1200 * 1024 && v.duration <= maxSec + 0.5) {
+        const src = await blobToDataUrl(file);
+        if (L.isVideoData(src)) return { src, dur: Math.max(1, Math.round(dur)) };
+      }
+      if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) throw new Error('no encoder');
+      const d = L.fitSize(v.videoWidth || 480, v.videoHeight || 360, 480);
+      const w = d.w - (d.w % 2) || 2;
+      const h = d.h - (d.h % 2) || 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const g = canvas.getContext('2d');
+      const out = canvas.captureStream(15);
+      let ac = null;
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        ac = new AC();
+        const dest = ac.createMediaStreamDestination();
+        ac.createMediaElementSource(v).connect(dest);
+        dest.stream.getAudioTracks().forEach((t) => out.addTrack(t));
+        v.muted = false;
+      } catch (e) { ac = null; }
+      const types = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm'];
+      const mime = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+      const mr = new MediaRecorder(out, Object.assign({ videoBitsPerSecond: 450000, audioBitsPerSecond: 48000 }, mime ? { mimeType: mime } : {}));
+      const chunks = [];
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      const finished = new Promise((resolve) => { mr.onstop = resolve; });
+      let timer = null;
+      const draw = () => { try { g.drawImage(v, 0, 0, w, h); } catch (e) { /* frame not ready */ } };
+      mr.start(500);
+      timer = setInterval(() => {
+        draw();
+        if (v.ended || v.currentTime >= maxSec) { clearInterval(timer); v.pause(); if (mr.state !== 'inactive') mr.stop(); }
+      }, 66);
+      v.onended = () => { clearInterval(timer); draw(); if (mr.state !== 'inactive') mr.stop(); };
+      await v.play();
+      await finished;
+      clearInterval(timer);
+      if (ac) ac.close().catch(ignore);
+      const blob = new Blob(chunks, { type: mr.mimeType || 'video/webm' });
+      const src = await blobToDataUrl(blob);
+      if (!L.isVideoData(src)) throw new Error('too big');
+      return { src, dur: Math.max(1, Math.round(dur)) };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  async function prepareVideo(file) {
+    if (videoBusy) { toast('انتظر حتى ينتهي تجهيز الفيديو السابق.'); return null; }
+    videoBusy = true;
+    toast('جارٍ تجهيز الفيديو، لا تغلق التطبيق…', 60000);
+    try {
+      const r = await videoToClip(file, L.MAX_VIDEO_SECONDS);
+      $('#toast').hidden = true;
+      return r;
+    } catch (e) {
+      toast(e && e.message === 'too big' ? 'الفيديو كبير جدًا. اختر مقطعًا أقصر.' : 'تعذّر استخدام هذا الفيديو. جرّب مقطعًا آخر.');
+      return null;
+    } finally {
+      videoBusy = false;
+    }
+  }
+
   /* ───────── history: the Android back button closes one layer, not the app ───────── */
   const navStack = [];
   function navPush(k) {
@@ -183,12 +293,44 @@
       if (me) $('#meBtn').focus();
     } else if (k === 'status') {
       hideViewer();
+    } else if (k === 'call') {
+      $('#call').hidden = true;
+      if (call) endCall(true, 'ended', true);
     }
   }
   window.addEventListener('popstate', () => {
     const e = navStack.pop();
     if (e) applyClose(e.k);
   });
+
+  /* ───────── system notifications (while the app is open or in the background) ───────── */
+  const capNotif = () => (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
+  const notifSupported = () => !!capNotif() || 'Notification' in window;
+  async function notifyPermission() {
+    const cn = capNotif();
+    if (cn) {
+      try { const r = await cn.requestPermissions(); return r.display === 'granted'; } catch (e) { return false; }
+    }
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    try { return (await Notification.requestPermission()) === 'granted'; } catch (e) { return false; }
+  }
+  // Shown only when the app is not on screen; on screen, the in-app toast is enough.
+  function systemNotify(title, body, tag) {
+    if (!notifOn || !document.hidden) return;
+    const cn = capNotif();
+    if (cn) {
+      cn.schedule({ notifications: [{ id: Math.floor(Date.now() % 2147483000), title, body, schedule: { at: new Date(Date.now() + 200) } }] }).catch(ignore);
+      return;
+    }
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const opts = { body, tag, lang: 'ar', dir: 'rtl' };
+    try { new Notification(title, opts); } // eslint-disable-line no-new
+    catch (e) {
+      if (navigator.serviceWorker) navigator.serviceWorker.getRegistration().then((r) => { if (r) r.showNotification(title, opts); }).catch(ignore);
+    }
+  }
 
   /* ───────── contacts ───────── */
   function contactFor(uid) {
@@ -231,6 +373,7 @@
       const c = contactFor(e.uid);
       keep.add(c.id);
       const before = c.unread;
+      const prevRaw = c.rawUnread;
       c.inInbox = true;
       c.pending = false;
       c.lastT = e.t;
@@ -241,7 +384,10 @@
       c.unread = active === c.id ? 0 : e.unread;
       if (e.typing && e.typing !== c.typingVal) { c.typingVal = e.typing; c.typingAt = Date.now(); }
       if (!e.typing) { c.typingVal = 0; c.typingAt = 0; }
-      if (!inboxFirst && c.unread > before && c.id !== active) toast('رسالة جديدة من ' + (c.name || 'مستخدم'));
+      if (!inboxFirst && e.unread > prevRaw && e.from && e.from !== me.uid) {
+        if (c.id !== active) toast('رسالة جديدة من ' + (c.name || 'مستخدم'));
+        systemNotify(c.name || 'رسالة جديدة', hidePreview ? 'رسالة جديدة' : (e.last || 'رسالة جديدة'), 'msg-' + c.id);
+      }
       fetchProfile(c);
     }
     contacts = contacts.filter((c) => keep.has(c.id) || c.pending || c.id === active);
@@ -255,6 +401,7 @@
 
   function markRead(c) {
     if (!me || !c) return;
+    writeSeq++;
     if (c.rawUnread > 0) {
       c.rawUnread = 0;
       API.patch('inbox/' + me.uid + '/' + c.uid, { unread: 0 }).catch(ignore);
@@ -271,7 +418,7 @@
   function startChatStream(c) {
     stopChatStream();
     chatStream = API.stream('chats/' + L.chatId(me.uid, c.uid), CHAT_QUERY, {
-      onData: (tree) => onChatData(c, tree),
+      onData: (tree) => { chatEvt++; onChatData(c, tree); },
       onState: (s) => setConn('chat', s === 'online'),
     });
   }
@@ -349,17 +496,20 @@
     inboxFirst = true;
     inboxLoaded = false;
     inboxStream = API.stream('inbox/' + me.uid, '', {
-      onData: onInbox,
+      onData: (t) => { inboxEvt++; onInbox(t); },
       onState: (s) => setConn('inbox', s === 'online'),
     });
     statusStream = API.stream('statuses/' + me.uid, '', { onData: onMyStatuses });
+    ringStream = API.stream('ring/' + me.uid, '', { onData: onRings });
   }
   function restartStreams() {
     if (!me || !inboxStream) return;
     inboxStream.close();
     if (statusStream) statusStream.close();
-    inboxStream = API.stream('inbox/' + me.uid, '', { onData: onInbox, onState: (st) => setConn('inbox', st === 'online') });
+    if (ringStream) ringStream.close();
+    inboxStream = API.stream('inbox/' + me.uid, '', { onData: (t) => { inboxEvt++; onInbox(t); }, onState: (st) => setConn('inbox', st === 'online') });
     statusStream = API.stream('statuses/' + me.uid, '', { onData: onMyStatuses });
+    ringStream = API.stream('ring/' + me.uid, '', { onData: onRings });
     const c = cur();
     if (c) startChatStream(c);
     lastInboxPoll = 0;
@@ -368,7 +518,8 @@
   function stopStreams() {
     if (inboxStream) inboxStream.close();
     if (statusStream) statusStream.close();
-    inboxStream = statusStream = null;
+    if (ringStream) ringStream.close();
+    inboxStream = statusStream = ringStream = null;
     stopChatStream();
   }
 
@@ -544,6 +695,9 @@
     const md = m.media;
     if (!md) return '';
     if (md.type === 'image' && L.isImageData(md.src)) return '<img class="mimg" src="' + esc(md.src) + '" alt="صورة مرسلة">';
+    if (md.type === 'video' && L.isVideoData(md.src)) {
+      return '<video class="mvid" controls playsinline preload="metadata" src="' + esc(md.src) + '" aria-label="فيديو مرسل"></video>';
+    }
     if (md.type === 'audio' && L.isAudioData(md.src)) {
       return '<div class="vm"><button type="button" class="vm-play" data-play="' + m.id + '" aria-label="تشغيل الرسالة الصوتية">' + ic('play') + '</button>' +
         '<div class="vm-bar"><i data-vmbar="' + m.id + '"></i></div>' +
@@ -606,6 +760,9 @@
     const c = cur();
     const el = $('#msgs');
     if (!c) { el.innerHTML = ''; return; }
+    const playing = Array.from(el.querySelectorAll('video')).some((v) => !v.paused && !v.ended);
+    if (!force && playing && c.msgs.length === lastMsgCount) { updateCountdowns(); return; }
+    lastMsgCount = c.msgs.length;
     const near = force || el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     const keep = el.scrollTop;
     el.innerHTML = (c.msgs.length ? '' : '<div class="sys">ابدأ المحادثة، رسائلك تصل فور إرسالها.</div>') +
@@ -779,6 +936,246 @@
     reader.readAsDataURL(blob);
   }
 
+  /* ───────── calls (WebRTC; signalling goes through the database) ───────── */
+  const callSupported = () => !!(window.RTCPeerConnection && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  function callPeer() { return call ? contactById(call.peer) : null; }
+  function renderCall() {
+    if (!call) return;
+    const c = callPeer();
+    $('#call').classList.toggle('ringing', call.state === 'ringing');
+    $('#callAv').innerHTML = avatar(c ? cname(c) : '…', c ? c.mood : 'creative', 'lg', c ? c.photo : null);
+    $('#callName').textContent = c ? cname(c) : '…';
+    let st = '';
+    if (call.state === 'ringing') st = call.role === 'caller' ? 'جارٍ الاتصال…' : (call.kind === 'video' ? 'مكالمة فيديو واردة' : 'مكالمة صوتية واردة');
+    else if (call.state === 'connecting') st = 'جارٍ الربط…';
+    else if (call.state === 'weak') st = 'ضعف في الاتصال…';
+    else if (call.state === 'connected') st = 'متصل · ' + L.formatElapsed(Date.now() - call.startedAt);
+    $('#callState').textContent = st;
+    const hasVideo = call.kind === 'video';
+    $('#remoteVid').style.visibility = hasVideo && call.state === 'connected' ? 'visible' : 'hidden';
+    $('#localVid').hidden = !(hasVideo && call.local);
+    let b = '';
+    if (call.role === 'callee' && call.state === 'ringing') {
+      b = '<button type="button" class="call-btn end" data-call="decline" aria-label="رفض">' + ic('hangup') + '</button>' +
+          '<button type="button" class="call-btn ok" data-call="accept" aria-label="رد">' + ic(hasVideo ? 'video' : 'phone') + '</button>';
+    } else {
+      b = '<button type="button" class="call-btn" data-call="mute" aria-pressed="' + !!call.muted + '" aria-label="كتم الميكروفون">' + ic(call.muted ? 'micoff' : 'mic') + '</button>' +
+          (hasVideo ? '<button type="button" class="call-btn" data-call="cam" aria-pressed="' + !!call.camOff + '" aria-label="إيقاف الكاميرا">' + ic(call.camOff ? 'camoff' : 'video') + '</button>' : '') +
+          '<button type="button" class="call-btn end" data-call="end" aria-label="إنهاء المكالمة">' + ic('hangup') + '</button>';
+    }
+    if ($('#callBtns').dataset.sig !== b) { $('#callBtns').innerHTML = b; $('#callBtns').dataset.sig = b; }
+  }
+  function showCallUi() {
+    $('#call').hidden = false;
+    $('#callBtns').dataset.sig = '';
+    navPush('call');
+    renderCall();
+  }
+  function makePc() {
+    const pc = new RTCPeerConnection({ iceServers: cfg.iceServers || L.defaultIce });
+    pc.onicecandidate = (e) => {
+      if (!e.candidate || !call) return;
+      call.iceQueue.push(e.candidate.toJSON());
+      flushIce();
+    };
+    pc.ontrack = (e) => {
+      const v = $('#remoteVid');
+      if (e.streams && e.streams[0]) { v.srcObject = e.streams[0]; v.play().catch(ignore); }
+    };
+    pc.onconnectionstatechange = () => {
+      if (!call || call.pc !== pc) return;
+      const st = pc.connectionState;
+      if (st === 'connected') {
+        clearTimeout(call.weakTimer);
+        if (call.state !== 'connected') { call.state = 'connected'; call.startedAt = Date.now(); clearTimeout(call.ringTimer); }
+        renderCall();
+      } else if (st === 'disconnected') {
+        call.state = 'weak';
+        renderCall();
+        clearTimeout(call.weakTimer);
+        call.weakTimer = setTimeout(() => { if (call && call.pc === pc && pc.connectionState !== 'connected') endCall(true, 'failed'); }, 10000);
+      } else if (st === 'failed') {
+        endCall(true, 'failed');
+      }
+    };
+    return pc;
+  }
+  function flushIce() {
+    if (!call || !call.iceReady) return;
+    while (call.iceQueue.length) {
+      const cand = call.iceQueue.shift();
+      const id = String(call.iceN++).padStart(4, '0');
+      API.put('calls/' + call.cid + '/ice/' + call.role + '/' + id, cand).catch(ignore);
+    }
+  }
+  async function getLocal(kind) {
+    return navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: kind === 'video' ? { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } : false,
+    });
+  }
+  function newCall(role, peer, kind) {
+    return {
+      role, peer, kind, cid: L.chatId(me.uid, peer), state: 'ringing', pc: null, local: null, iceQueue: [], iceN: 0,
+      iceReady: false, added: {}, answered: false, muted: false, camOff: false, startedAt: 0, ringTimer: null, weakTimer: null, stream: null,
+    };
+  }
+  async function startCall(kind) {
+    const c = cur();
+    if (!c || call || !me) return;
+    if (!callSupported()) { toast('المكالمات غير مدعومة في هذا المتصفح.'); return; }
+    const my = newCall('caller', c.uid, kind);
+    call = my;
+    showCallUi();
+    try {
+      my.local = await getLocal(kind);
+    } catch (e) {
+      endCall(false, 'nomic');
+      return;
+    }
+    if (call !== my) { my.local.getTracks().forEach((t) => t.stop()); return; }
+    try {
+      my.pc = makePc();
+      my.local.getTracks().forEach((t) => my.pc.addTrack(t, my.local));
+      if (kind === 'video') { $('#localVid').srcObject = my.local; }
+      const offer = await my.pc.createOffer();
+      await my.pc.setLocalDescription(offer);
+      await API.put('calls/' + my.cid, { from: me.uid, to: c.uid, kind, state: 'ringing', offer: { type: offer.type, sdp: offer.sdp }, t: { '.sv': 'timestamp' } });
+      my.iceReady = true;
+      flushIce();
+      await API.put('ring/' + c.uid + '/' + me.uid, { t: { '.sv': 'timestamp' }, kind });
+      if (call !== my) return;
+      my.stream = API.stream('calls/' + my.cid, '', { onData: onCallData });
+      my.ringTimer = setTimeout(() => { if (call === my && my.state === 'ringing') endCall(true, 'noanswer'); }, L.RING_MS);
+      renderCall();
+    } catch (e) {
+      if (call === my) endCall(false, 'error');
+    }
+  }
+  async function acceptCall() {
+    const my = call;
+    if (!my || my.role !== 'callee' || my.state !== 'ringing') return;
+    my.state = 'connecting';
+    renderCall();
+    try {
+      my.local = await getLocal(my.kind);
+    } catch (e) {
+      endCall(true, 'decline');
+      toast('اسمح بالميكروفون' + (my.kind === 'video' ? ' والكاميرا' : '') + ' ثم أعد المحاولة.');
+      return;
+    }
+    if (call !== my) { my.local.getTracks().forEach((t) => t.stop()); return; }
+    try {
+      const rec = await API.get('calls/' + my.cid);
+      if (!rec || !rec.offer || rec.state === 'ended') { endCall(false, 'ended'); return; }
+      my.pc = makePc();
+      my.local.getTracks().forEach((t) => my.pc.addTrack(t, my.local));
+      if (my.kind === 'video') { $('#localVid').srcObject = my.local; }
+      await my.pc.setRemoteDescription(rec.offer);
+      my.answered = true;
+      const answer = await my.pc.createAnswer();
+      await my.pc.setLocalDescription(answer);
+      await API.patch('calls/' + my.cid, { answer: { type: answer.type, sdp: answer.sdp }, state: 'accepted' });
+      my.iceReady = true;
+      flushIce();
+      API.del('ring/' + me.uid + '/' + my.peer).catch(ignore);
+      applyRemoteIce(my, rec);
+      renderCall();
+    } catch (e) {
+      if (call === my) endCall(true, 'failed');
+    }
+  }
+  function applyRemoteIce(my, rec) {
+    if (!my.pc || !my.pc.remoteDescription) return;
+    const other = my.role === 'caller' ? 'callee' : 'caller';
+    const list = rec && rec.ice && rec.ice[other];
+    if (!list) return;
+    for (const k of Object.keys(list).sort()) {
+      if (my.added[k]) continue;
+      my.added[k] = true;
+      my.pc.addIceCandidate(list[k]).catch(ignore);
+    }
+  }
+  async function onCallData(tree) {
+    const my = call;
+    if (!my || !tree) return;
+    if (tree.state === 'ended' || tree.state === 'declined') {
+      endCall(false, tree.state === 'declined' ? 'declined' : 'ended');
+      return;
+    }
+    if (my.role === 'caller' && tree.answer && !my.answered && my.pc) {
+      my.answered = true;
+      clearTimeout(my.ringTimer);
+      my.state = 'connecting';
+      renderCall();
+      try { await my.pc.setRemoteDescription(tree.answer); } catch (e) { endCall(true, 'failed'); return; }
+    }
+    applyRemoteIce(my, tree);
+  }
+  function onRings(tree) {
+    if (!me) return;
+    const rings = L.parseRings(tree, Date.now());
+    if (call) {
+      if (call.role === 'callee' && call.state === 'ringing' && !rings.some((r) => r.uid === call.peer)) endCall(false, 'missed');
+      return;
+    }
+    if (!rings.length) return;
+    const r = rings[0];
+    const c = contactFor(r.uid);
+    fetchProfile(c);
+    const my = newCall('callee', r.uid, r.kind);
+    call = my;
+    my.stream = API.stream('calls/' + my.cid, '', { onData: onCallData });
+    my.ringTimer = setTimeout(() => { if (call === my && my.state === 'ringing') endCall(false, 'missed'); }, L.RING_MS);
+    systemNotify(c.name || 'مكالمة واردة', r.kind === 'video' ? 'مكالمة فيديو واردة' : 'مكالمة صوتية واردة', 'call-' + r.uid);
+    try { if (navigator.vibrate) navigator.vibrate([300, 200, 300]); } catch (e) { /* not supported */ }
+    showCallUi();
+  }
+  function endCall(notify, reason, skipNav) {
+    const my = call;
+    if (!my) return;
+    call = null;
+    clearTimeout(my.ringTimer);
+    clearTimeout(my.weakTimer);
+    if (my.stream) my.stream.close();
+    if (notify && me) {
+      API.patch('calls/' + my.cid, { state: reason === 'decline' ? 'declined' : 'ended' }).catch(ignore);
+    }
+    if (me) {
+      if (my.role === 'caller') API.del('ring/' + my.peer + '/' + me.uid).catch(ignore);
+      else API.del('ring/' + me.uid + '/' + my.peer).catch(ignore);
+    }
+    if (my.local) my.local.getTracks().forEach((t) => t.stop());
+    if (my.pc) { try { my.pc.close(); } catch (e) { /* closed */ } }
+    $('#remoteVid').srcObject = null;
+    $('#localVid').srcObject = null;
+    $('#call').hidden = true;
+    const msg = {
+      declined: 'رفض المكالمة.', noanswer: 'لم يردّ.', missed: 'مكالمة فائتة.', failed: 'انقطعت المكالمة. قد تمنع شبكتك الاتصال المباشر.',
+      nomic: 'اسمح بالميكروفون' + (my.kind === 'video' ? ' والكاميرا' : '') + ' لإجراء المكالمة.', error: 'تعذّر بدء المكالمة. تحقق من الإنترنت.',
+    }[reason];
+    if (msg) toast(msg);
+    if (!skipNav) {
+      const top = navStack[navStack.length - 1];
+      if (top && top.k === 'call') navClose('call');
+    }
+  }
+  function callAction(a) {
+    if (!call) return;
+    if (a === 'accept') acceptCall();
+    else if (a === 'decline') endCall(true, 'decline');
+    else if (a === 'end') endCall(true, 'ended');
+    else if (a === 'mute') {
+      call.muted = !call.muted;
+      if (call.local) call.local.getAudioTracks().forEach((t) => { t.enabled = !call.muted; });
+      renderCall();
+    } else if (a === 'cam') {
+      call.camOff = !call.camOff;
+      if (call.local) call.local.getVideoTracks().forEach((t) => { t.enabled = !call.camOff; });
+      renderCall();
+    }
+  }
+
   /* ───────── time loop ───────── */
   function statusSig(now) {
     return contacts.map((c) => L.liveStatuses(c.statuses, now).length).join(',') + '|' + L.liveStatuses(myStatuses, now).length;
@@ -827,17 +1224,25 @@
       renderStatus();
       renderTabs();
     }
+    if (call && call.state === 'connected') renderCall();
     const s = API.session();
     if (s && s.refreshToken && s.refreshToken !== me.rt) saveSession();
     if (now - lastPoll > POLL_MS) pollStatuses();
     if (now - lastInboxPoll > 8000) {
       lastInboxPoll = now;
-      API.get('inbox/' + me.uid).then((t) => { if (me) onInbox(t); }).catch(ignore);
+      const e0 = inboxEvt;
+      const w0 = writeSeq;
+      API.get('inbox/' + me.uid).then((t) => { if (me && e0 === inboxEvt && w0 === writeSeq) onInbox(t); }).catch(ignore);
     }
     if (c && now - lastChatPoll > 4000) {
       lastChatPoll = now;
       const id = c.id;
-      API.get('chats/' + L.chatId(me.uid, c.uid), CHAT_QUERY).then((t) => { const k = cur(); if (me && k && k.id === id) onChatData(k, t); }).catch(ignore);
+      const e0 = chatEvt;
+      const w0 = writeSeq;
+      API.get('chats/' + L.chatId(me.uid, c.uid), CHAT_QUERY).then((t) => {
+        const k = cur();
+        if (me && k && k.id === id && e0 === chatEvt && w0 === writeSeq && !k.msgs.some((m) => m.status === 'sending')) onChatData(k, t);
+      }).catch(ignore);
     }
 
     if (changed) renderAll(false);
@@ -882,6 +1287,7 @@
   }
 
   async function deliver(c, m) {
+    writeSeq++;
     m.status = 'sending';
     renderAll(false);
     try {
@@ -906,6 +1312,7 @@
       m.status = 'failed';
       if (e && e.code === 'PERMISSION_DENIED') toast(errorText(e));
     }
+    writeSeq++;
     if (me) renderAll(false);
   }
 
@@ -940,6 +1347,15 @@
 
   async function onChatFile(file) {
     if (!file || !mediaAllowed()) return;
+    if (/^video\//.test(file.type)) {
+      const target = active;
+      const clip = await prepareVideo(file);
+      if (!clip) return;
+      const caption = $('#msg').value.trim();
+      $('#msg').value = '';
+      sendMedia({ type: 'video', src: clip.src, dur: clip.dur }, caption, target);
+      return;
+    }
     try {
       const src = await imageToDataUrl(file, { max: 1024, quality: 0.78 });
       const caption = $('#msg').value.trim();
@@ -993,7 +1409,12 @@
       '<button type="button" class="icon-btn" id="vClose" aria-label="إغلاق">' + ic('close') + '</button>';
 
     const body = $('#vBody');
-    if (s.kind === 'image' && L.isImageData(s.img)) {
+    if (s.kind === 'video' && L.isVideoData(s.vid)) {
+      body.style.background = '#000';
+      body.innerHTML = '<video src="' + esc(s.vid) + '" autoplay playsinline aria-label="فيديو الحالة"></video>' + (s.text ? '<div class="v-cap">' + esc(s.text) + '</div>' : '');
+      const vv = body.querySelector('video');
+      vv.play().catch(() => { vv.muted = true; vv.play().catch(ignore); });
+    } else if (s.kind === 'image' && L.isImageData(s.img)) {
       body.style.background = '#000';
       body.innerHTML = '<img src="' + esc(s.img) + '" alt="صورة الحالة">' + (s.text ? '<div class="v-cap">' + esc(s.text) + '</div>' : '');
     } else {
@@ -1022,12 +1443,13 @@
     if (!V) return;
     const list = vList();
     const el = Date.now() - V.t0;
-    const pct = Math.min(1, el / L.STATUS_VIEW_MS);
+    const total = L.statusViewMs(list[V.idx]);
+    const pct = Math.min(1, el / total);
     document.querySelectorAll('[data-vb]').forEach((b) => {
       const i = Number(b.dataset.vb);
       b.style.width = (i < V.idx ? 100 : i === V.idx ? pct * 100 : 0) + '%';
     });
-    if (el >= L.STATUS_VIEW_MS) vNext(list);
+    if (el >= total) vNext(list);
   }
   function vNext(list) {
     list = list || vList();
@@ -1080,22 +1502,26 @@
       '<div><div class="sh-title">هالة المزاج</div><div class="moods">' + moods + '</div></div>' +
       '<div class="set"><div><b>وضع الشبح</b><span>اقرأ واكتب دون أن يرى الآخرون أثرك.</span></div>' +
       '<button type="button" class="switch" role="switch" id="swGhost" aria-label="وضع الشبح" aria-checked="' + ghost + '"></button></div>' +
+      (notifSupported() ? '<div class="set"><div><b>الإشعارات</b><span>تنبيه برسالة جديدة أو مكالمة والتطبيق مفتوح أو في الخلفية. لا تصل إن أغلقه النظام.</span></div>' +
+      '<button type="button" class="switch" role="switch" id="swNotif" aria-label="الإشعارات" aria-checked="' + notifOn + '"></button></div>' : '') +
       '<div class="set"><div><b>إخفاء معاينة الرسائل</b><span>تمويه آخر رسالة في قائمة المحادثات.</span></div>' +
       '<button type="button" class="switch" role="switch" id="swPrev" aria-label="إخفاء معاينة الرسائل" aria-checked="' + hidePreview + '"></button></div>' +
       '<button type="button" class="btn danger" id="logout">' + (confirmLogout ? 'اضغط مرة أخرى لتأكيد الخروج' : 'تسجيل الخروج') + '</button>';
   }
   function composeHtml() {
-    const isImg = draft.kind === 'image';
+    const isVid = draft.kind === 'video';
+    const isImg = draft.kind === 'image' || isVid;
     const bg = L.STATUS_BGS[draft.bg] || L.STATUS_BGS[0];
     const sw = L.STATUS_BGS.map((b, i) =>
       '<button type="button" class="swatch" data-bg="' + i + '" style="background:linear-gradient(135deg,' + b[0] + ',' + b[1] + ')" aria-label="لون الخلفية ' + (i + 1) + '" aria-pressed="' + (draft.bg === i) + '"></button>').join('');
     return '<div class="sh-head"><h2 id="sheetTitle" class="grow">حالة جديدة</h2>' +
       '<button type="button" class="icon-btn" id="closeSheet" aria-label="إغلاق">' + ic('close') + '</button></div>' +
       '<div class="stp' + (isImg ? ' img' : '') + '"' + (isImg ? '' : ' style="background:linear-gradient(160deg,' + bg[0] + ',' + bg[1] + ')"') + '>' +
-      (isImg ? '<img src="' + esc(draft.img) + '" alt="معاينة صورة الحالة">' : '') +
+      (isVid ? '<video src="' + esc(draft.vid) + '" controls playsinline muted aria-label="معاينة فيديو الحالة"></video>'
+        : isImg ? '<img src="' + esc(draft.img) + '" alt="معاينة صورة الحالة">' : '') +
       '<textarea id="stText" maxlength="' + L.STATUS_MAX_CHARS + '" rows="' + (isImg ? 2 : 4) + '" placeholder="' + (isImg ? 'أضف تعليقًا (اختياري)' : 'اكتب حالتك') + '" aria-label="نص الحالة">' + esc(draft.text) + '</textarea></div>' +
       (isImg ? '' : '<div><div class="sh-title">لون الخلفية</div><div class="swatches">' + sw + '</div></div>') +
-      '<div class="row-actions"><button type="button" class="btn quiet" id="stPhoto">' + ic('camera') + (isImg ? 'تغيير الصورة' : 'إضافة صورة') + '</button>' +
+      '<div class="row-actions"><button type="button" class="btn quiet" id="stPhoto">' + ic('camera') + (isImg ? 'تغيير الصورة أو الفيديو' : 'إضافة صورة أو فيديو') + '</button>' +
       (isImg ? '<button type="button" class="btn quiet" id="stNoPhoto">نص فقط</button>' : '') + '</div>' +
       '<button type="button" class="btn primary" id="stPost">نشر الحالة</button>' +
       '<p class="fine">تختفي الحالة بعد 24 ساعة.</p>';
@@ -1112,13 +1538,16 @@
     $('#sheet').focus();
   }
   function openCompose() {
-    draft = { kind: 'text', bg: 0, text: '', img: null };
+    draft = { kind: 'text', bg: 0, text: '', img: null, vid: null, dur: 0 };
     openSheet('status');
   }
   async function postStatus() {
     const v = L.validateStatusText(draft.text, draft.kind === 'text');
     if (!v.ok) { toast(v.error); return; }
-    const s = { id: L.newMsgId(Date.now()), kind: draft.kind, text: v.value, bg: draft.bg, img: draft.kind === 'image' ? draft.img : null, t: Date.now(), viewers: [] };
+    const s = {
+      id: L.newMsgId(Date.now()), kind: draft.kind, text: v.value, bg: draft.bg, img: draft.kind === 'image' ? draft.img : null,
+      vid: draft.kind === 'video' ? draft.vid : null, dur: draft.kind === 'video' ? draft.dur : 0, t: Date.now(), viewers: [],
+    };
     const btn = $('#stPost');
     if (btn) btn.disabled = true;
     try {
@@ -1154,6 +1583,17 @@
   }
   async function onStatusFile(file) {
     if (!file) return;
+    if (/^video\//.test(file.type)) {
+      draft.text = $('#stText') ? $('#stText').value : draft.text;
+      const clip = await prepareVideo(file);
+      if (!clip) return;
+      draft.kind = 'video';
+      draft.vid = clip.src;
+      draft.dur = clip.dur;
+      draft.img = null;
+      if (!$('#scrim').hidden && sheetMode === 'status') refreshSheet();
+      return;
+    }
     try {
       draft.text = $('#stText') ? $('#stText').value : draft.text;
       draft.img = await imageToDataUrl(file, { max: 960, quality: 0.78 });
@@ -1221,6 +1661,7 @@
     loadPhone();
   }
   function logout() {
+    endCall(true, 'ended', true);
     cancelRec();
     stopPlayer();
     stopStreams();
@@ -1228,7 +1669,7 @@
     $('#viewer').hidden = true;
     clearInterval(tickTimer);
     API.signOut();
-    me = null; contacts = []; myStatuses = []; active = null; ghost = false; hidePreview = false; mode = 'plain'; tab = 'chats';
+    me = null; contacts = []; myStatuses = []; active = null; ghost = false; hidePreview = false; notifOn = false; mode = 'plain'; tab = 'chats';
     pState = {}; inboxLoaded = false;
     navStack.length = 0;
     saveSession();
@@ -1258,6 +1699,7 @@
     };
     ghost = !!s.ghost;
     hidePreview = !!s.hidePreview;
+    notifOn = !!s.notif;
     API.restoreSession({ uid: s.uid, idToken: '', refreshToken: s.refreshToken, expiresAt: 0 });
     try {
       await API.token(true);
@@ -1332,6 +1774,7 @@
       };
       ghost = false;
       hidePreview = false;
+      notifOn = false;
       $('#passInput').value = '';
       saveSession();
       enter();
@@ -1396,6 +1839,9 @@
     });
 
     $('#backBtn').addEventListener('click', closeChat);
+    $('#callAudio').addEventListener('click', () => startCall('audio'));
+    $('#callVideo').addEventListener('click', () => startCall('video'));
+    $('#callBtns').addEventListener('click', (e) => { const b = e.target.closest('[data-call]'); if (b) callAction(b.dataset.call); });
     $('#meBtn').addEventListener('click', () => openSheet('profile'));
     $('#sendForm').addEventListener('submit', (e) => { e.preventDefault(); send(); });
     $('#msg').addEventListener('input', () => sendTyping($('#msg').value.length > 0));
@@ -1462,7 +1908,7 @@
         const bg = t.closest('[data-bg]');
         if (bg) { draft.text = $('#stText').value; draft.bg = Number(bg.dataset.bg); refreshSheet(); return; }
         if (t.closest('#stPhoto')) { $('#statusFile').click(); return; }
-        if (t.closest('#stNoPhoto')) { draft.text = $('#stText').value; draft.kind = 'text'; draft.img = null; refreshSheet(); return; }
+        if (t.closest('#stNoPhoto')) { draft.text = $('#stText').value; draft.kind = 'text'; draft.img = null; draft.vid = null; refreshSheet(); return; }
         if (t.closest('#stPost')) { draft.text = $('#stText').value; postStatus(); }
         return;
       }
@@ -1486,6 +1932,12 @@
         renderChat(false);
         if (ghost) sendTyping(false);
         else { const c = cur(); if (c) markRead(c); }
+        return;
+      }
+      if (t.closest('#swNotif')) {
+        if (notifOn) { notifOn = false; saveSession(); refreshSheet(); return; }
+        if (await notifyPermission()) { notifOn = true; saveSession(); refreshSheet(); toast('فُعّلت الإشعارات.'); }
+        else toast('الإشعارات ممنوعة. اسمح بها من إعدادات الجهاز ثم أعد المحاولة.');
         return;
       }
       if (t.closest('#swPrev')) { hidePreview = !hidePreview; saveSession(); refreshSheet(); renderList(); return; }

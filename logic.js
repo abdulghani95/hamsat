@@ -108,7 +108,7 @@
       mode: o.mode || 'plain',
       t: now,
     };
-    if (o.media) m.media = o.media; // { type: 'image'|'audio', src, dur? }
+    if (o.media) m.media = o.media; // { type: 'image'|'audio'|'video', src, dur? }
     if (m.from === 'me') m.status = o.status || 'sent';
     if (m.mode === 'fade') {
       m.expiresAt = now + o.option * 1000;
@@ -189,7 +189,7 @@
     if (m.mode === 'fade') return p + (m.gone ? 'اختفت الرسالة' : 'رسالة تتلاشى');
     if (m.mode === 'capsule') return p + (m.unlocked ? 'كبسولة مفتوحة' : 'كبسولة زمنية');
     if (m.mode === 'secret') return p + (m.burned ? 'احترقت الرسالة' : 'رسالة سرية');
-    if (m.media) return p + (m.media.type === 'audio' ? 'رسالة صوتية' : 'صورة');
+    if (m.media) return p + (m.media.type === 'audio' ? 'رسالة صوتية' : m.media.type === 'video' ? 'فيديو' : 'صورة');
     return p + m.text;
   }
 
@@ -300,6 +300,8 @@
     return (list || []).filter((s) => isLive(s, now));
   }
 
+  const statusViewMs = (s) => (s && s.kind === 'video' ? Math.max(STATUS_VIEW_MS, Math.round((s.dur || 0) * 1000)) : STATUS_VIEW_MS);
+
   function statusAgo(t, now) {
     const min = Math.floor(Math.max(0, now - t) / 60000);
     if (min < 1) return 'الآن';
@@ -355,6 +357,28 @@
   }
   function isAudioData(s) {
     return typeof s === 'string' && /^data:audio\/[a-z0-9.+-]+(;codecs=[a-z0-9.,]+)?;base64,[A-Za-z0-9+/=]+$/i.test(s);
+  }
+  /* ───────── Calls (signalling records, pure) ───────── */
+  const RING_MS = 45000;
+  const CALL_KINDS = ['audio', 'video'];
+  const callKind = (k) => (CALL_KINDS.indexOf(k) >= 0 ? k : 'audio');
+  // An incoming ring is real only while it is fresh.
+  const ringActive = (r, now) => !!r && typeof r.t === 'number' && now - r.t < RING_MS && now - r.t > -60000;
+  function parseRings(tree, now) {
+    if (!tree || typeof tree !== 'object') return [];
+    return Object.keys(tree).map((uid) => {
+      const r = tree[uid];
+      return r && ringActive(r, now) ? { uid, t: r.t, kind: callKind(r.kind) } : null;
+    }).filter(Boolean).sort((a, b) => b.t - a.t);
+  }
+  const defaultIce = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+
+  /* ───────── Video clips (short, stored inline in the database) ───────── */
+  const MAX_VIDEO_SECONDS = 15;
+  const MAX_VIDEO_CHARS = 3200000; // about 2.3 MB of video
+  function isVideoData(s) {
+    return typeof s === 'string' && s.length <= MAX_VIDEO_CHARS &&
+      /^data:video\/[a-z0-9.+-]+(;codecs=[a-z0-9.,]+)?;base64,[A-Za-z0-9+/=]+$/i.test(s);
   }
   function bytesToBase64(bytes) {
     const T = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -442,7 +466,7 @@
     if (m.mode === 'capsule') rec.ttl = Math.round(m.total / 1000);
     if (m.media) {
       rec.media = { type: m.media.type, src: m.media.src };
-      if (m.media.type === 'audio') rec.media.dur = m.media.dur || 0;
+      if (m.media.type === 'audio' || m.media.type === 'video') rec.media.dur = m.media.dur || 0;
     }
     return rec;
   }
@@ -465,7 +489,9 @@
     delete m.media;
     const md = rec.media;
     if (md && md.type === 'image' && isImageData(md.src)) m.media = { type: 'image', src: md.src };
-    else if (md && md.type === 'audio' && isAudioData(md.src)) {
+    else if (md && md.type === 'video' && isVideoData(md.src)) {
+      m.media = { type: 'video', src: md.src, dur: Math.max(0, Math.min(MAX_VIDEO_SECONDS + 1, Number(md.dur) || 0)) };
+    } else if (md && md.type === 'audio' && isAudioData(md.src)) {
       m.media = { type: 'audio', src: md.src, dur: Math.max(0, Math.min(MAX_VOICE_SECONDS, Number(md.dur) || 0)) };
     }
     if (mode === 'fade') {
@@ -496,7 +522,7 @@
     if (rec.mode === 'fade') return 'رسالة تتلاشى';
     if (rec.mode === 'capsule') return 'كبسولة زمنية';
     if (rec.mode === 'secret') return 'رسالة سرية';
-    if (rec.media) return rec.media.type === 'audio' ? 'رسالة صوتية' : 'صورة';
+    if (rec.media) return rec.media.type === 'audio' ? 'رسالة صوتية' : rec.media.type === 'video' ? 'فيديو' : 'صورة';
     return String(rec.text || '').slice(0, 80);
   }
   const entryPreview = (e, meUid) => (e.from === meUid ? 'أنت: ' : '') + e.last;
@@ -534,16 +560,21 @@
 
   function statusFromRecord(id, rec) {
     if (!rec || typeof rec !== 'object' || typeof rec.t !== 'number') return null;
-    const kind = rec.kind === 'image' ? 'image' : 'text';
+    const kind = rec.kind === 'image' ? 'image' : rec.kind === 'video' ? 'video' : 'text';
     if (kind === 'image' && !isImageData(rec.img)) return null;
+    if (kind === 'video' && !isVideoData(rec.vid)) return null;
     const text = String(rec.text == null ? '' : rec.text).slice(0, STATUS_MAX_CHARS);
     if (kind === 'text' && !text.trim()) return null;
     const bg = Number.isInteger(rec.bg) && rec.bg >= 0 && rec.bg < STATUS_BGS.length ? rec.bg : 0;
-    return { id, kind, text, bg, img: kind === 'image' ? rec.img : null, t: rec.t };
+    return {
+      id, kind, text, bg, img: kind === 'image' ? rec.img : null, vid: kind === 'video' ? rec.vid : null,
+      dur: kind === 'video' ? Math.max(1, Math.min(MAX_VIDEO_SECONDS + 1, Number(rec.dur) || MAX_VIDEO_SECONDS)) : 0, t: rec.t,
+    };
   }
   function statusRecord(s) {
     const rec = { kind: s.kind, text: s.text || '', bg: s.bg, t: s.t };
     if (s.kind === 'image') rec.img = s.img;
+    if (s.kind === 'video') { rec.vid = s.vid; rec.dur = s.dur || 0; }
     return rec;
   }
 
@@ -551,10 +582,10 @@
     TYPING_MS, PASSWORD_MIN, chatId, handleKey, syntheticEmail, validatePassword, normalizePhone, looksLikePhone,
     maskPhone, sha256Hex, phoneKey, newMsgId, recordFromMessage, recordExpired, messageFromRecord, previewLabel,
     entryPreview, isTyping, deliveryState, parseInbox, userFromRecord, statusFromRecord, statusRecord,
-    MAX_VOICE_SECONDS, formatElapsed, isAudioData, bytesToBase64, toneWav,
+    MAX_VOICE_SECONDS, MAX_VIDEO_SECONDS, MAX_VIDEO_CHARS, isVideoData, formatElapsed, isAudioData, bytesToBase64, toneWav,
     STATUS_TTL_MS, STATUS_VIEW_MS, STATUS_MAX_CHARS, STATUS_BGS,
-    isLive, liveStatuses, statusAgo, validateStatusText, statusInfo, statusContacts,
-    fitSize, cropSquare, isImageData,
+    isLive, liveStatuses, statusViewMs, statusAgo, validateStatusText, statusInfo, statusContacts,
+    fitSize, cropSquare, isImageData, RING_MS, callKind, ringActive, parseRings, defaultIce,
     MOODS, FADE_OPTIONS, CAPSULE_OPTIONS, MODES,
     SECRET_VIEW_MS, SECRET_AUTO_BURN_MS, VANISH_MS,
     normalizeHandle, validateUsername, validateName,

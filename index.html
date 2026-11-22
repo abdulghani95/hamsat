@@ -39,6 +39,11 @@
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z"/><circle cx="12" cy="13" r="3.5"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4.5h4V7M7 7l.8 12h8.4L17 7M10.5 11v5M13.5 11v5"/></symbol>
     <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z"/></symbol>
+    <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="M15 11l6-3.5v9L15 13"/></symbol>
+    <symbol id="i-hangup" viewBox="0 0 24 24"><path d="M3 14c5-5 13-5 18 0l-2.5 2.5-3-1.5v-2.5a11 11 0 00-7 0V15l-3 1.5z"/></symbol>
+    <symbol id="i-micoff" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3M9 21h6M4 4l16 16"/></symbol>
+    <symbol id="i-camoff" viewBox="0 0 24 24"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="M15 11l6-3.5v9L15 13M4 4l16 16"/></symbol>
     <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v3M9 21h6"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
@@ -184,6 +189,8 @@
           <b id="chName"></b>
           <span id="chStatus" class="status"></span>
         </div>
+        <button id="callAudio" class="icon-btn" type="button" aria-label="مكالمة صوتية"><svg class="i"><use href="#i-phone"/></svg></button>
+        <button id="callVideo" class="icon-btn" type="button" aria-label="مكالمة فيديو"><svg class="i"><use href="#i-video"/></svg></button>
       </header>
       <div id="ghostBanner" class="banner" hidden>
         <svg class="i"><use href="#i-ghost"/></svg>
@@ -194,7 +201,7 @@
         <div id="modes" class="modes" role="group" aria-label="نوع الرسالة"></div>
         <div id="opts" class="opts"></div>
         <form id="sendForm" class="inputrow" autocomplete="off">
-          <button id="attachBtn" class="icon-btn" type="button" aria-label="إرسال صورة"><svg class="i"><use href="#i-image"/></svg></button>
+          <button id="attachBtn" class="icon-btn" type="button" aria-label="إرسال صورة أو فيديو"><svg class="i"><use href="#i-image"/></svg></button>
           <input id="msg" type="text" enterkeyhint="send" placeholder="اكتب رسالة" aria-label="نص الرسالة" autocomplete="off">
           <button id="micBtn" class="icon-btn" type="button" aria-label="تسجيل رسالة صوتية"><svg class="i"><use href="#i-mic"/></svg></button>
           <button id="sendBtn" class="send" type="submit" aria-label="إرسال"><svg class="i flip"><use href="#i-send"/></svg></button>
@@ -226,9 +233,21 @@
   <div id="vFoot" class="v-foot"></div>
 </div>
 
+<!-- ───────── Call ───────── -->
+<div id="call" class="call" role="dialog" aria-modal="true" aria-label="مكالمة" hidden>
+  <video id="remoteVid" class="call-remote" autoplay playsinline></video>
+  <video id="localVid" class="call-local" autoplay playsinline muted hidden></video>
+  <div class="call-info">
+    <div id="callAv"></div>
+    <b id="callName"></b>
+    <span id="callState" role="status" aria-live="polite"></span>
+  </div>
+  <div id="callBtns" class="call-btns"></div>
+</div>
+
 <input id="avatarFile" type="file" accept="image/*" hidden aria-label="اختيار صورة شخصية">
-<input id="statusFile" type="file" accept="image/*" hidden aria-label="اختيار صورة للحالة">
-<input id="chatFile" type="file" accept="image/*" hidden aria-label="اختيار صورة لإرسالها">
+<input id="statusFile" type="file" accept="image/*,video/*" hidden aria-label="اختيار صورة للحالة">
+<input id="chatFile" type="file" accept="image/*,video/*" hidden aria-label="اختيار صورة أو فيديو لإرساله">
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
