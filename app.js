@@ -25,6 +25,9 @@
   let hidePreview = false;
   let notifOn = false;
   let soundOn = true;
+  let clearedMap = {}; // uid -> time the person deleted that chat for themselves
+  let afterSheet = null;
+  let pendingNotif = [];
   let callSndTimer = null;
   let mode = 'plain';
   let tab = 'chats';
@@ -291,6 +294,7 @@
       renderAll(false);
     } else if (k === 'sheet') {
       $('#scrim').hidden = true;
+      if (afterSheet) { const f = afterSheet; afterSheet = null; setTimeout(f, 0); }
       confirmLogout = false;
       if (me) $('#meBtn').focus();
     } else if (k === 'status') {
@@ -304,6 +308,36 @@
     const e = navStack.pop();
     if (e) applyClose(e.k);
   });
+
+  /* ───────── app updates: the Android app learns about a newer build from GitHub Releases ───────── */
+  const BUILD = Number(window.HAMSA_BUILD) || 0;
+  let updDismissed = false;
+  let lastUpdCheck = 0;
+  async function checkUpdate(manual) {
+    const repo = window.HAMSA_REPO;
+    if (!BUILD || !repo) { if (manual) toast('هذه النسخة لا تدعم فحص التحديثات.'); return; }
+    lastUpdCheck = Date.now();
+    try {
+      const res = await fetch('https://api.github.com/repos/' + repo + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } });
+      if (!res.ok) throw new Error('http');
+      const rel = await res.json();
+      const m = /^apk-(\d+)$/.exec(String(rel.tag_name || ''));
+      if (!m) throw new Error('tag');
+      const latest = Number(m[1]);
+      if (latest > BUILD) {
+        const asset = (rel.assets || []).find((a) => /\.apk$/i.test(a.name || ''));
+        const url = (asset && asset.browser_download_url) || rel.html_url || '#';
+        $('#updGo').href = url;
+        $('#updText').textContent = 'يتوفر تحديث جديد (' + latest + '). نزّله وثبّته فوق النسخة الحالية، وتبقى حساباتك ومحادثاتك.';
+        if (manual || !updDismissed) $('#updBar').hidden = false;
+      } else {
+        $('#updBar').hidden = true;
+        if (manual) toast('أنت تستخدم أحدث نسخة.');
+      }
+    } catch (e) {
+      if (manual) toast('تعذّر فحص التحديثات. تحقق من الإنترنت.');
+    }
+  }
 
   /* ───────── sounds (synthesised, no audio files) ───────── */
   let audioCtx = null;
@@ -359,7 +393,21 @@
   }
 
   /* ───────── system notifications (while the app is open or in the background) ───────── */
-  const capNotif = () => (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
+  const capCache = {};
+  function capPlugin(name) {
+    if (name in capCache && capCache[name]) return capCache[name];
+    let p = null;
+    const C = window.Capacitor;
+    if (C) {
+      p = (C.Plugins && C.Plugins[name]) || null;
+      if (!p && C.registerPlugin && typeof C.isNativePlatform === 'function' && C.isNativePlatform()) {
+        try { p = C.registerPlugin(name); } catch (e) { p = null; }
+      }
+    }
+    capCache[name] = p;
+    return p;
+  }
+  const capNotif = () => capPlugin('LocalNotifications');
   const notifSupported = () => !!capNotif() || 'Notification' in window;
   async function notifyPermission() {
     const cn = capNotif();
@@ -371,20 +419,61 @@
     if (Notification.permission === 'denied') return false;
     try { return (await Notification.requestPermission()) === 'granted'; } catch (e) { return false; }
   }
-  // Shown only when the app is not on screen; on screen, the in-app toast is enough.
-  function systemNotify(title, body, tag) {
+  const hashId = (str) => {
+    let h = 7;
+    for (const ch of String(str)) h = (h * 31 + ch.charCodeAt(0)) | 0;
+    return (Math.abs(h) % 2147483000) + 1;
+  };
+  function setupNative(cn) {
+    if (setupNative.done) return;
+    setupNative.done = true;
+    try {
+      if (cn.createChannel) {
+        cn.createChannel({ id: 'msgs', name: 'الرسائل', description: 'رسائل جديدة', importance: 4, visibility: 1, vibration: true }).catch(ignore);
+        cn.createChannel({ id: 'calls', name: 'المكالمات', description: 'مكالمات واردة', importance: 5, visibility: 1, vibration: true }).catch(ignore);
+      }
+      if (cn.registerActionTypes) {
+        cn.registerActionTypes({ types: [{ id: 'MSG', actions: [{ id: 'reply', title: 'رد', input: true, inputButtonTitle: 'إرسال', inputPlaceholder: 'اكتب ردك' }] }] }).catch(ignore);
+      }
+      if (cn.addListener) cn.addListener('localNotificationActionPerformed', onNotifAction);
+    } catch (e) { /* plugin not usable */ }
+  }
+  function onNotifAction(ev) {
+    const n = (ev && ev.notification) || {};
+    const uid = n.extra && n.extra.uid;
+    if (!uid) return;
+    const a = { uid, actionId: ev.actionId, input: typeof ev.inputValue === 'string' ? ev.inputValue : '' };
+    if (me && inboxLoaded) runNotifAction(a);
+    else pendingNotif.push(a);
+  }
+  function runNotifAction(a) {
+    const c = contactFor(a.uid);
+    if (a.actionId === 'reply' && a.input.trim()) {
+      sendQuick(c, a.input.trim());
+      cancelNotif('msg-' + c.id);
+    } else if (a.actionId === 'tap') {
+      openChat(c.id);
+    }
+  }
+  function flushNotifActions() {
+    const list = pendingNotif;
+    pendingNotif = [];
+    list.forEach(runNotifAction);
+  }
+  function cancelNotif(tag) {
+    const cn = capNotif();
+    if (cn && cn.cancel) cn.cancel({ notifications: [{ id: hashId(tag) }] }).catch(ignore);
+  }
+  // Shown at once (no scheduling, which Android may delay), and only when the app is not on screen.
+  function systemNotify(title, body, tag, uid) {
     if (!notifOn || !document.hidden) return;
     const cn = capNotif();
     if (cn) {
+      setupNative(cn);
       const isCall = String(tag).indexOf('call-') === 0;
-      if (!systemNotify.channels) {
-        systemNotify.channels = true;
-        if (cn.createChannel) {
-          cn.createChannel({ id: 'msgs', name: 'الرسائل', description: 'رسائل جديدة', importance: 4, visibility: 1, vibration: true }).catch(ignore);
-          cn.createChannel({ id: 'calls', name: 'المكالمات', description: 'مكالمات واردة', importance: 5, visibility: 1, vibration: true }).catch(ignore);
-        }
-      }
-      cn.schedule({ notifications: [{ id: Math.floor(Date.now() % 2147483000), title, body, channelId: isCall ? 'calls' : 'msgs', schedule: { at: new Date(Date.now() + 100) } }] }).catch(ignore);
+      const n = { id: hashId(tag), title, body, channelId: isCall ? 'calls' : 'msgs', smallIcon: 'ic_stat', autoCancel: true, extra: { uid: uid || '' } };
+      if (!isCall) n.actionTypeId = 'MSG';
+      cn.schedule({ notifications: [n] }).catch(ignore);
       return;
     }
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -433,6 +522,8 @@
     const keep = new Set();
     for (const e of entries) {
       if (e.uid === me.uid) continue;
+      clearedMap[e.uid] = e.cleared;
+      if (L.inboxHidden(e) && e.uid !== active) continue;
       const c = contactFor(e.uid);
       keep.add(c.id);
       const before = c.unread;
@@ -449,7 +540,7 @@
       if (!e.typing) { c.typingVal = 0; c.typingAt = 0; }
       if (!inboxFirst && e.unread > prevRaw && e.from && e.from !== me.uid) {
         if (c.id !== active) toast('رسالة جديدة من ' + (c.name || 'مستخدم'));
-        systemNotify(c.name || 'رسالة جديدة', hidePreview ? 'رسالة جديدة' : (e.last || 'رسالة جديدة'), 'msg-' + c.id);
+        systemNotify(c.name || 'رسالة جديدة', hidePreview ? 'رسالة جديدة' : (e.last || 'رسالة جديدة'), 'msg-' + c.id, c.uid);
         if (!document.hidden) playSound('recv');
       }
       fetchProfile(c);
@@ -457,6 +548,7 @@
     contacts = contacts.filter((c) => keep.has(c.id) || c.pending || c.id === active);
     inboxLoaded = true;
     inboxFirst = false;
+    if (pendingNotif.length) flushNotifActions();
     const c = cur();
     if (c) markRead(c);
     if (!lastPoll) pollStatuses();
@@ -499,6 +591,7 @@
     const cid = L.chatId(me.uid, c.uid);
     for (const id of Object.keys(tree || {}).sort()) {
       const r = tree[id];
+      if (r && typeof r.t === 'number' && r.t <= (clearedMap[c.uid] || 0)) continue;
       if (L.recordExpired(r, now)) {
         API.del('chats/' + cid + '/' + id).catch(ignore);
         continue;
@@ -557,6 +650,8 @@
   }
 
   function startStreams() {
+    checkUpdate(false);
+    if (notifOn && capNotif()) setupNative(capNotif());
     inboxFirst = true;
     inboxLoaded = false;
     inboxStream = API.stream('inbox/' + me.uid, '', {
@@ -1002,6 +1097,27 @@
 
   /* ───────── calls (WebRTC; signalling goes through the database) ───────── */
   const callSupported = () => !!(window.RTCPeerConnection && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  // Speaker / earpiece. In the Android app a small native plugin switches the phone's audio route;
+  // in a browser we can only try to pick an output device, which many phones do not allow.
+  async function setSpeaker(on) {
+    const ar = capPlugin('AudioRoute');
+    if (ar && ar.setSpeaker) {
+      try { await ar.setSpeaker({ on: !!on }); return true; } catch (e) { return false; }
+    }
+    const v = $('#remoteVid');
+    if (v && v.setSinkId && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      try {
+        const outs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audiooutput');
+        const target = on ? outs.find((d) => /speaker|مكبر/i.test(d.label)) : outs.find((d) => /earpiece|receiver|handset|سماعة/i.test(d.label));
+        if (target) { await v.setSinkId(target.deviceId); return true; }
+      } catch (e) { /* not allowed */ }
+    }
+    return false;
+  }
+  function resetAudioRoute() {
+    const ar = capPlugin('AudioRoute');
+    if (ar && ar.reset) ar.reset().catch(ignore);
+  }
   function callPeer() { return call ? contactById(call.peer) : null; }
   function renderCall() {
     if (!call) return;
@@ -1023,7 +1139,8 @@
       b = '<button type="button" class="call-btn end" data-call="decline" aria-label="رفض">' + ic('hangup') + '</button>' +
           '<button type="button" class="call-btn ok" data-call="accept" aria-label="رد">' + ic(hasVideo ? 'video' : 'phone') + '</button>';
     } else {
-      b = '<button type="button" class="call-btn" data-call="mute" aria-pressed="' + !!call.muted + '" aria-label="كتم الميكروفون">' + ic(call.muted ? 'micoff' : 'mic') + '</button>' +
+      b = '<button type="button" class="call-btn" data-call="spk" aria-pressed="' + !!call.speaker + '" aria-label="مكبّر الصوت">' + ic('speaker') + '</button>' +
+          '<button type="button" class="call-btn" data-call="mute" aria-pressed="' + !!call.muted + '" aria-label="كتم الميكروفون">' + ic(call.muted ? 'micoff' : 'mic') + '</button>' +
           (hasVideo ? '<button type="button" class="call-btn" data-call="cam" aria-pressed="' + !!call.camOff + '" aria-label="إيقاف الكاميرا">' + ic(call.camOff ? 'camoff' : 'video') + '</button>' : '') +
           '<button type="button" class="call-btn end" data-call="end" aria-label="إنهاء المكالمة">' + ic('hangup') + '</button>';
     }
@@ -1082,7 +1199,7 @@
   function newCall(role, peer, kind) {
     return {
       role, peer, kind, cid: L.chatId(me.uid, peer), state: 'ringing', pc: null, local: null, iceQueue: [], iceN: 0,
-      iceReady: false, added: {}, answered: false, muted: false, camOff: false, startedAt: 0, ringTimer: null, weakTimer: null, stream: null,
+      iceReady: false, added: {}, answered: false, muted: false, camOff: false, speaker: kind === 'video', startedAt: 0, ringTimer: null, weakTimer: null, stream: null,
     };
   }
   async function startCall(kind) {
@@ -1099,6 +1216,7 @@
       return;
     }
     if (call !== my) { my.local.getTracks().forEach((t) => t.stop()); return; }
+    setSpeaker(my.speaker);
     try {
       my.pc = makePc();
       my.local.getTracks().forEach((t) => my.pc.addTrack(t, my.local));
@@ -1130,6 +1248,7 @@
       return;
     }
     if (call !== my) { my.local.getTracks().forEach((t) => t.stop()); return; }
+    setSpeaker(my.speaker);
     try {
       const rec = await API.get('calls/' + my.cid);
       if (!rec || !rec.offer || rec.state === 'ended') { endCall(false, 'ended'); return; }
@@ -1192,7 +1311,7 @@
     call = my;
     my.stream = API.stream('calls/' + my.cid, '', { onData: onCallData });
     my.ringTimer = setTimeout(() => { if (call === my && my.state === 'ringing') endCall(false, 'missed'); }, L.RING_MS);
-    systemNotify(c.name || 'مكالمة واردة', r.kind === 'video' ? 'مكالمة فيديو واردة' : 'مكالمة صوتية واردة', 'call-' + r.uid);
+    systemNotify(c.name || 'مكالمة واردة', r.kind === 'video' ? 'مكالمة فيديو واردة' : 'مكالمة صوتية واردة', 'call-' + r.uid, r.uid);
     try { if (navigator.vibrate) navigator.vibrate([300, 200, 300]); } catch (e) { /* not supported */ }
     showCallUi();
   }
@@ -1213,6 +1332,7 @@
     if (my.local) my.local.getTracks().forEach((t) => t.stop());
     if (my.pc) { try { my.pc.close(); } catch (e) { /* closed */ } }
     syncCallSound();
+    resetAudioRoute();
     if (my.state !== 'ringing' || my.role === 'caller') playSound('end');
     $('#remoteVid').srcObject = null;
     $('#localVid').srcObject = null;
@@ -1232,7 +1352,14 @@
     if (a === 'accept') acceptCall();
     else if (a === 'decline') endCall(true, 'decline');
     else if (a === 'end') endCall(true, 'ended');
-    else if (a === 'mute') {
+    else if (a === 'spk') {
+      const want = !call.speaker;
+      setSpeaker(want).then((ok) => {
+        if (!call) return;
+        if (ok) { call.speaker = want; renderCall(); }
+        else toast('تعذّر تبديل مخرج الصوت على هذا الجهاز.');
+      });
+    } else if (a === 'mute') {
       call.muted = !call.muted;
       if (call.local) call.local.getAudioTracks().forEach((t) => { t.enabled = !call.muted; });
       renderCall();
@@ -1292,6 +1419,7 @@
       renderTabs();
     }
     if (call && call.state === 'connected') renderCall();
+    if (BUILD && Date.now() - lastUpdCheck > 6 * 3600 * 1000) checkUpdate(false);
     const s = API.session();
     if (s && s.refreshToken && s.refreshToken !== me.rt) saveSession();
     if (now - lastPoll > POLL_MS) pollStatuses();
@@ -1328,6 +1456,7 @@
     const was = active;
     active = id;
     c.unread = 0;
+    cancelNotif('msg-' + c.id);
     if (!wide() && !navStack.some((e) => e.k === 'chat')) navPush('chat');
     if (was !== id) {
       cancelRec();
@@ -1396,6 +1525,13 @@
     input.value = '';
     lastTypingWrite = 0;
     renderAll(true);
+    deliver(c, m);
+  }
+
+  function sendQuick(c, text) {
+    const now = Date.now();
+    const m = L.createMessage({ id: L.newMsgId(now), from: 'me', text: text.slice(0, MAX_TEXT), mode: 'plain', now, status: 'sending' });
+    c.msgs.push(m);
     deliver(c, m);
   }
 
@@ -1572,6 +1708,7 @@
       '<button type="button" class="switch" role="switch" id="swGhost" aria-label="وضع الشبح" aria-checked="' + ghost + '"></button></div>' +
       '<div class="set"><div><b>الأصوات</b><span>نغمة للرسائل الواردة والمرسلة، ورنين للمكالمات.</span></div>' +
       '<button type="button" class="switch" role="switch" id="swSound" aria-label="الأصوات" aria-checked="' + soundOn + '"></button></div>' +
+      (BUILD ? '<div class="set"><div><b>تحديث التطبيق</b><span>الإصدار ' + BUILD + '</span></div><button type="button" class="btn quiet" id="chkUpd">تحقق الآن</button></div>' : '') +
       (notifSupported() ? '<div class="set"><div><b>الإشعارات</b><span>تنبيه برسالة جديدة أو مكالمة والتطبيق مفتوح أو في الخلفية. لا تصل إن أغلقه النظام.</span></div>' +
       '<button type="button" class="switch" role="switch" id="swNotif" aria-label="الإشعارات" aria-checked="' + notifOn + '"></button></div>' : '') +
       '<div class="set"><div><b>إخفاء معاينة الرسائل</b><span>تمويه آخر رسالة في قائمة المحادثات.</span></div>' +
@@ -1596,8 +1733,47 @@
       '<button type="button" class="btn primary" id="stPost">نشر الحالة</button>' +
       '<p class="fine">تختفي الحالة بعد 24 ساعة.</p>';
   }
+  function delHtml() {
+    const c = cur();
+    const n = c ? esc(cname(c)) : '';
+    return '<div class="sh-head"><div class="grow"><h2 id="sheetTitle">حذف المحادثة مع ' + n + '</h2></div>' +
+      '<button type="button" class="icon-btn" id="closeSheet" aria-label="إغلاق">' + ic('close') + '</button></div>' +
+      '<button type="button" class="btn quiet" id="delMe">حذف عندي فقط</button>' +
+      '<p class="fine">تختفي المحادثة من قائمتك وتبقى عند ' + n + '. تظهر رسائل جديدة فقط إن أرسل لك.</p>' +
+      '<button type="button" class="btn danger" id="delBoth">حذف عند الطرفين</button>' +
+      '<p class="fine">تُمحى الرسائل نهائيًا من عندك ومن عند ' + n + '، ولا يمكن التراجع.</p>';
+  }
   function refreshSheet() {
-    $('#sheet').innerHTML = sheetMode === 'status' ? composeHtml() : profileHtml();
+    $('#sheet').innerHTML = sheetMode === 'status' ? composeHtml() : sheetMode === 'delete' ? delHtml() : profileHtml();
+  }
+  async function deleteChat(both) {
+    const c = cur();
+    if (!c || !me) return;
+    const cid = L.chatId(me.uid, c.uid);
+    const uid = c.uid;
+    try {
+      if (both) {
+        await API.del('chats/' + cid);
+        await API.del('inbox/' + uid + '/' + me.uid);
+        await API.del('inbox/' + me.uid + '/' + uid);
+        clearedMap[uid] = 0;
+      } else {
+        // the time of the newest message, so phones with different clocks agree on what was deleted
+        const newest = c.msgs.reduce((mx, m) => Math.max(mx, m.t || 0), 0);
+        const at = Math.max(c.lastT || 0, newest) || Date.now();
+        await API.patch('inbox/' + me.uid + '/' + uid, { cleared: at, unread: 0, last: '' });
+        clearedMap[uid] = at;
+      }
+    } catch (e) {
+      toast(errorText(e));
+      return;
+    }
+    c.msgs = [];
+    c.inInbox = false;
+    c.pending = false;
+    contacts = contacts.filter((x) => x !== c || x.id === active);
+    afterSheet = () => { closeChat(); contacts = contacts.filter((x) => x.uid !== uid); renderAll(false); toast(both ? 'حُذفت المحادثة عند الطرفين.' : 'حُذفت المحادثة من عندك.'); };
+    navClose('sheet');
   }
   function openSheet(m) {
     sheetMode = m || 'profile';
@@ -1739,7 +1915,7 @@
     $('#viewer').hidden = true;
     clearInterval(tickTimer);
     API.signOut();
-    me = null; contacts = []; myStatuses = []; active = null; ghost = false; hidePreview = false; notifOn = false; soundOn = true; mode = 'plain'; tab = 'chats';
+    me = null; contacts = []; myStatuses = []; active = null; ghost = false; hidePreview = false; notifOn = false; soundOn = true; clearedMap = {}; pendingNotif = []; mode = 'plain'; tab = 'chats';
     pState = {}; inboxLoaded = false;
     navStack.length = 0;
     saveSession();
@@ -1748,6 +1924,7 @@
     $('#pq').value = '';
     $('#passInput').value = '';
     $('#connBar').hidden = true;
+    $('#updBar').hidden = true;
     setAuthMode('login');
     showOnly('auth');
   }
@@ -1911,6 +2088,8 @@
     });
 
     $('#backBtn').addEventListener('click', closeChat);
+    $('#updLater').addEventListener('click', () => { updDismissed = true; $('#updBar').hidden = true; });
+    $('#delChat').addEventListener('click', () => { if (cur()) openSheet('delete'); });
     $('#callAudio').addEventListener('click', () => startCall('audio'));
     $('#callVideo').addEventListener('click', () => startCall('video'));
     $('#callBtns').addEventListener('click', (e) => { const b = e.target.closest('[data-call]'); if (b) callAction(b.dataset.call); });
@@ -1976,6 +2155,11 @@
     $('#sheet').addEventListener('click', async (e) => {
       const t = e.target;
       if (t.closest('#closeSheet')) return navClose('sheet');
+      if (sheetMode === 'delete') {
+        if (t.closest('#delMe')) deleteChat(false);
+        else if (t.closest('#delBoth')) deleteChat(true);
+        return;
+      }
       if (sheetMode === 'status') {
         const bg = t.closest('[data-bg]');
         if (bg) { draft.text = $('#stText').value; draft.bg = Number(bg.dataset.bg); refreshSheet(); return; }
@@ -2006,6 +2190,7 @@
         else { const c = cur(); if (c) markRead(c); }
         return;
       }
+      if (t.closest('#chkUpd')) { checkUpdate(true); return; }
       if (t.closest('#swSound')) {
         soundOn = !soundOn;
         saveSession();
@@ -2040,7 +2225,7 @@
   function boot() {
     bind();
     // In the Android app the system back button is handled here, so it closes one layer instead of leaving the app.
-    const capApp = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    const capApp = capPlugin('App');
     if (capApp && capApp.addListener) {
       capApp.addListener('backButton', () => {
         const top = navStack[navStack.length - 1];

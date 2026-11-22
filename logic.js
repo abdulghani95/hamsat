@@ -546,9 +546,13 @@
         unread: Math.max(0, Math.min(999, Number(e.unread) || 0)),
         seen: Number(e.seen) || 0,
         typing: Number(e.typing) || 0,
+        cleared: Number(e.cleared) || 0,
       };
     }).filter(Boolean).sort((a, b) => b.t - a.t);
   }
+
+  // A conversation the person deleted "for me" stays hidden until something newer arrives.
+  const inboxHidden = (e) => !!e && e.cleared > 0 && e.t <= e.cleared;
 
   function userFromRecord(rec) {
     if (!rec || typeof rec !== 'object') return null;
@@ -581,7 +585,7 @@
   return {
     TYPING_MS, PASSWORD_MIN, chatId, handleKey, syntheticEmail, validatePassword, normalizePhone, looksLikePhone,
     maskPhone, sha256Hex, phoneKey, newMsgId, recordFromMessage, recordExpired, messageFromRecord, previewLabel,
-    entryPreview, isTyping, deliveryState, parseInbox, userFromRecord, statusFromRecord, statusRecord,
+    entryPreview, isTyping, deliveryState, parseInbox, inboxHidden, userFromRecord, statusFromRecord, statusRecord,
     MAX_VOICE_SECONDS, MAX_VIDEO_SECONDS, MAX_VIDEO_CHARS, isVideoData, formatElapsed, isAudioData, bytesToBase64, toneWav,
     STATUS_TTL_MS, STATUS_VIEW_MS, STATUS_MAX_CHARS, STATUS_BGS,
     isLive, liveStatuses, statusViewMs, statusAgo, validateStatusText, statusInfo, statusContacts,

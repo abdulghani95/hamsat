@@ -39,6 +39,7 @@
     <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z"/><circle cx="12" cy="13" r="3.5"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4.5h4V7M7 7l.8 12h8.4L17 7M10.5 11v5M13.5 11v5"/></symbol>
     <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4zM15.5 9a4 4 0 010 6M18 6.5a7.5 7.5 0 010 11"/></symbol>
     <symbol id="i-phone" viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z"/></symbol>
     <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="M15 11l6-3.5v9L15 13"/></symbol>
     <symbol id="i-hangup" viewBox="0 0 24 24"><path d="M3 14c5-5 13-5 18 0l-2.5 2.5-3-1.5v-2.5a11 11 0 00-7 0V15l-3 1.5z"/></symbol>
@@ -140,6 +141,13 @@
       </div>
       <button id="meBtn" class="av-btn" type="button" aria-label="ملفي الشخصي والإعدادات"></button>
     </header>
+    <div id="updBar" class="banner upd" role="status" hidden>
+      <svg class="i"><use href="#i-check"/></svg>
+      <span id="updText">يتوفر تحديث جديد للتطبيق.</span>
+      <a id="updGo" class="upd-go" href="#" target="_blank" rel="noopener">تنزيل</a>
+      <button id="updLater" type="button" class="upd-later" aria-label="لاحقًا">لاحقًا</button>
+    </div>
+
     <div id="connBar" class="banner conn" role="status" hidden>
       <svg class="i"><use href="#i-timer"/></svg>
       <span>جارٍ الاتصال بالخادم… الرسائل الجديدة ستصل عند عودة الاتصال.</span>
@@ -191,6 +199,7 @@
         </div>
         <button id="callAudio" class="icon-btn" type="button" aria-label="مكالمة صوتية"><svg class="i"><use href="#i-phone"/></svg></button>
         <button id="callVideo" class="icon-btn" type="button" aria-label="مكالمة فيديو"><svg class="i"><use href="#i-video"/></svg></button>
+        <button id="delChat" class="icon-btn" type="button" aria-label="حذف المحادثة"><svg class="i"><use href="#i-trash"/></svg></button>
       </header>
       <div id="ghostBanner" class="banner" hidden>
         <svg class="i"><use href="#i-ghost"/></svg>
