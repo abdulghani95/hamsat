@@ -27,11 +27,20 @@ jobs:
         run: |
           mkdir www
           cp index.html style.css logic.js api.js config.js app.js sw.js manifest.webmanifest icon.svg icon-192.png icon-512.png icon-maskable-512.png www/
+          # the app learns its build number and repository, to tell you when a newer APK is released
+          printf '\nwindow.HAMSA_BUILD = %s;\nwindow.HAMSA_REPO = "%s";\n' "${{ github.run_number }}" "${{ github.repository }}" >> www/config.js
           npm init -y
           npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7 @capacitor/local-notifications@7 @capacitor/app@7
           npx cap init "همسة" com.hamsa.messenger --web-dir www
           npx cap add android
           npx cap sync android
+
+      - name: Add the speaker plugin and the notification icon
+        run: |
+          dir=android/app/src/main/java/com/hamsa/messenger
+          mkdir -p "$dir" android/app/src/main/res/drawable
+          cp AudioRoutePlugin.java MainActivity.java "$dir/"
+          cp icon-192.png android/app/src/main/res/drawable/ic_stat.png
 
       - name: Microphone permission, version number and a fixed signing key
         run: |
