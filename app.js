@@ -24,6 +24,8 @@
   let ghost = false;
   let hidePreview = false;
   let notifOn = false;
+  let soundOn = true;
+  let callSndTimer = null;
   let mode = 'plain';
   let tab = 'chats';
   let sheetMode = 'profile';
@@ -75,7 +77,7 @@
         refreshToken: me.rt,
         profile: { name: me.name, handle: me.handle, mood: me.mood, photo: me.photo },
         phone: me.phone || null,
-        ghost, hidePreview, notif: notifOn,
+        ghost, hidePreview, notif: notifOn, sound: soundOn,
         seenStore: me.seenStore,
       }));
     } catch (e) { /* storage unavailable: the app still works for this session */ }
@@ -303,6 +305,59 @@
     if (e) applyClose(e.k);
   });
 
+  /* ───────── sounds (synthesised, no audio files) ───────── */
+  let audioCtx = null;
+  function audio() {
+    if (!audioCtx) {
+      try { const AC = window.AudioContext || window.webkitAudioContext; if (AC) audioCtx = new AC(); } catch (e) { audioCtx = null; }
+    }
+    return audioCtx;
+  }
+  function unlockAudio() {
+    const a = audio();
+    if (a && a.state === 'suspended') a.resume().catch(ignore);
+  }
+  ['pointerdown', 'touchstart', 'keydown'].forEach((ev) => document.addEventListener(ev, unlockAudio, { passive: true }));
+  // seq: [frequency Hz, start s, length s, volume]
+  const SND = {
+    recv: [[880, 0, 0.12, 0.22], [1320, 0.11, 0.22, 0.22]],
+    sent: [[660, 0, 0.09, 0.14]],
+    ring: [[740, 0, 0.28, 0.3], [988, 0, 0.28, 0.3], [740, 0.42, 0.28, 0.3], [988, 0.42, 0.28, 0.3]],
+    back: [[440, 0, 0.4, 0.14]],
+    end: [[520, 0, 0.16, 0.2], [390, 0.18, 0.28, 0.2]],
+  };
+  function playSound(name) {
+    if (!soundOn) return;
+    const a = audio();
+    if (!a || a.state !== 'running') return;
+    try {
+      const t0 = a.currentTime;
+      for (const n of SND[name]) {
+        const o = a.createOscillator();
+        const g = a.createGain();
+        o.type = 'sine';
+        o.frequency.value = n[0];
+        g.gain.setValueAtTime(0, t0 + n[1]);
+        g.gain.linearRampToValueAtTime(n[3], t0 + n[1] + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + n[1] + n[2]);
+        o.connect(g);
+        g.connect(a.destination);
+        o.start(t0 + n[1]);
+        o.stop(t0 + n[1] + n[2] + 0.03);
+      }
+    } catch (e) { /* audio not available */ }
+  }
+  // Rings while a call is ringing: the callee hears a ringtone, the caller a soft ring-back.
+  function syncCallSound() {
+    const ringing = !!call && call.state === 'ringing' && soundOn;
+    const want = ringing ? (call.role === 'callee' ? 'ring' : 'back') : '';
+    if (callSndTimer && callSndTimer.kind === want) return;
+    if (callSndTimer) { clearInterval(callSndTimer.id); callSndTimer = null; }
+    if (!want) return;
+    playSound(want);
+    callSndTimer = { kind: want, id: setInterval(() => playSound(want), want === 'ring' ? 2000 : 3000) };
+  }
+
   /* ───────── system notifications (while the app is open or in the background) ───────── */
   const capNotif = () => (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.LocalNotifications) || null;
   const notifSupported = () => !!capNotif() || 'Notification' in window;
@@ -321,7 +376,15 @@
     if (!notifOn || !document.hidden) return;
     const cn = capNotif();
     if (cn) {
-      cn.schedule({ notifications: [{ id: Math.floor(Date.now() % 2147483000), title, body, schedule: { at: new Date(Date.now() + 200) } }] }).catch(ignore);
+      const isCall = String(tag).indexOf('call-') === 0;
+      if (!systemNotify.channels) {
+        systemNotify.channels = true;
+        if (cn.createChannel) {
+          cn.createChannel({ id: 'msgs', name: 'الرسائل', description: 'رسائل جديدة', importance: 4, visibility: 1, vibration: true }).catch(ignore);
+          cn.createChannel({ id: 'calls', name: 'المكالمات', description: 'مكالمات واردة', importance: 5, visibility: 1, vibration: true }).catch(ignore);
+        }
+      }
+      cn.schedule({ notifications: [{ id: Math.floor(Date.now() % 2147483000), title, body, channelId: isCall ? 'calls' : 'msgs', schedule: { at: new Date(Date.now() + 100) } }] }).catch(ignore);
       return;
     }
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -387,6 +450,7 @@
       if (!inboxFirst && e.unread > prevRaw && e.from && e.from !== me.uid) {
         if (c.id !== active) toast('رسالة جديدة من ' + (c.name || 'مستخدم'));
         systemNotify(c.name || 'رسالة جديدة', hidePreview ? 'رسالة جديدة' : (e.last || 'رسالة جديدة'), 'msg-' + c.id);
+        if (!document.hidden) playSound('recv');
       }
       fetchProfile(c);
     }
@@ -963,6 +1027,7 @@
           (hasVideo ? '<button type="button" class="call-btn" data-call="cam" aria-pressed="' + !!call.camOff + '" aria-label="إيقاف الكاميرا">' + ic(call.camOff ? 'camoff' : 'video') + '</button>' : '') +
           '<button type="button" class="call-btn end" data-call="end" aria-label="إنهاء المكالمة">' + ic('hangup') + '</button>';
     }
+    syncCallSound();
     if ($('#callBtns').dataset.sig !== b) { $('#callBtns').innerHTML = b; $('#callBtns').dataset.sig = b; }
   }
   function showCallUi() {
@@ -1147,6 +1212,8 @@
     }
     if (my.local) my.local.getTracks().forEach((t) => t.stop());
     if (my.pc) { try { my.pc.close(); } catch (e) { /* closed */ } }
+    syncCallSound();
+    if (my.state !== 'ringing' || my.role === 'caller') playSound('end');
     $('#remoteVid').srcObject = null;
     $('#localVid').srcObject = null;
     $('#call').hidden = true;
@@ -1288,6 +1355,7 @@
 
   async function deliver(c, m) {
     writeSeq++;
+    if (m.status !== 'failed') playSound('sent');
     m.status = 'sending';
     renderAll(false);
     try {
@@ -1502,6 +1570,8 @@
       '<div><div class="sh-title">هالة المزاج</div><div class="moods">' + moods + '</div></div>' +
       '<div class="set"><div><b>وضع الشبح</b><span>اقرأ واكتب دون أن يرى الآخرون أثرك.</span></div>' +
       '<button type="button" class="switch" role="switch" id="swGhost" aria-label="وضع الشبح" aria-checked="' + ghost + '"></button></div>' +
+      '<div class="set"><div><b>الأصوات</b><span>نغمة للرسائل الواردة والمرسلة، ورنين للمكالمات.</span></div>' +
+      '<button type="button" class="switch" role="switch" id="swSound" aria-label="الأصوات" aria-checked="' + soundOn + '"></button></div>' +
       (notifSupported() ? '<div class="set"><div><b>الإشعارات</b><span>تنبيه برسالة جديدة أو مكالمة والتطبيق مفتوح أو في الخلفية. لا تصل إن أغلقه النظام.</span></div>' +
       '<button type="button" class="switch" role="switch" id="swNotif" aria-label="الإشعارات" aria-checked="' + notifOn + '"></button></div>' : '') +
       '<div class="set"><div><b>إخفاء معاينة الرسائل</b><span>تمويه آخر رسالة في قائمة المحادثات.</span></div>' +
@@ -1669,7 +1739,7 @@
     $('#viewer').hidden = true;
     clearInterval(tickTimer);
     API.signOut();
-    me = null; contacts = []; myStatuses = []; active = null; ghost = false; hidePreview = false; notifOn = false; mode = 'plain'; tab = 'chats';
+    me = null; contacts = []; myStatuses = []; active = null; ghost = false; hidePreview = false; notifOn = false; soundOn = true; mode = 'plain'; tab = 'chats';
     pState = {}; inboxLoaded = false;
     navStack.length = 0;
     saveSession();
@@ -1700,6 +1770,7 @@
     ghost = !!s.ghost;
     hidePreview = !!s.hidePreview;
     notifOn = !!s.notif;
+    soundOn = s.sound !== false;
     API.restoreSession({ uid: s.uid, idToken: '', refreshToken: s.refreshToken, expiresAt: 0 });
     try {
       await API.token(true);
@@ -1775,6 +1846,7 @@
       ghost = false;
       hidePreview = false;
       notifOn = false;
+      soundOn = true;
       $('#passInput').value = '';
       saveSession();
       enter();
@@ -1932,6 +2004,15 @@
         renderChat(false);
         if (ghost) sendTyping(false);
         else { const c = cur(); if (c) markRead(c); }
+        return;
+      }
+      if (t.closest('#swSound')) {
+        soundOn = !soundOn;
+        saveSession();
+        unlockAudio();
+        if (soundOn) playSound('recv');
+        syncCallSound();
+        refreshSheet();
         return;
       }
       if (t.closest('#swNotif')) {
