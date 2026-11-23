@@ -39,13 +39,13 @@ jobs:
         run: |
           dir=android/app/src/main/java/com/hamsa/messenger
           mkdir -p "$dir" android/app/src/main/res/drawable
-          cp AudioRoutePlugin.java MainActivity.java "$dir/"
+          cp AudioRoutePlugin.java SaveMediaPlugin.java MainActivity.java "$dir/"
           cp icon-192.png android/app/src/main/res/drawable/ic_stat.png
 
       - name: Microphone permission, version number and a fixed signing key
         run: |
           # voice messages and calls need the microphone, video calls the camera
-          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
+          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n</manifest>#' android/app/src/main/AndroidManifest.xml
           # every build gets a higher version so it installs over the previous one
           sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/" android/app/build.gradle
           # the same key every time, so updates install over the old app
