@@ -1,5 +1,5 @@
 /* Offline shell for Hamsa. Bump CACHE when shipping a new version. */
-const CACHE = 'hamsa-v10';
+const CACHE = 'hamsa-v11';
 const SHELL = [
   './',
   'index.html',

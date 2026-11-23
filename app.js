@@ -850,17 +850,49 @@
     if (st === 'failed') return '<button type="button" class="retry" data-retry="' + m.id + '" aria-label="فشل الإرسال، اضغط لإعادة المحاولة">لم تُرسل · إعادة المحاولة</button>';
     return '<span class="ticks" aria-label="' + (st === 'read' ? 'قُرئت' : 'أُرسلت') + '">' + ic('check') + (st === 'read' ? ic('check') : '') + '</span>';
   }
+  const MIME_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'video/webm': 'webm',
+    'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3' };
+  function parseDataUrl(src) {
+    const mt = /^data:([^;,]+)(?:;[^,]*)?;base64,(.*)$/s.exec(String(src || ''));
+    if (!mt) return null;
+    const mime = mt[1].toLowerCase();
+    return { mime, b64: mt[2], ext: MIME_EXT[mime] || (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]/g, '') };
+  }
+  async function saveMedia(src) {
+    const d = parseDataUrl(src);
+    if (!d) return toast('تعذّر حفظ الملف');
+    const kind = d.mime.startsWith('image/') ? 'صورة' : d.mime.startsWith('video/') ? 'فيديو' : 'تسجيل';
+    const name = 'hamsa-' + Date.now() + '.' + d.ext;
+    const native = capPlugin('SaveMedia');
+    if (native && native.save) {
+      try { await native.save({ data: d.b64, mime: d.mime, name }); toast('تم حفظ ال' + kind + ' في معرض الجهاز'); }
+      catch (e) { toast('تعذّر الحفظ، تحقق من الأذونات'); }
+      return;
+    }
+    try {
+      const bin = atob(d.b64), arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([arr], { type: d.mime }));
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast('تم تنزيل ال' + kind);
+    } catch (e) { toast('تعذّر حفظ الملف'); }
+  }
   function mediaHtml(m) {
     const md = m.media;
     if (!md) return '';
-    if (md.type === 'image' && L.isImageData(md.src)) return '<img class="mimg" src="' + esc(md.src) + '" alt="صورة مرسلة">';
+    const saveBtn = '<button type="button" class="msave" data-save="' + m.id + '" aria-label="حفظ في الجهاز">' + ic('download') + '<span>حفظ</span></button>';
+    if (md.type === 'image' && L.isImageData(md.src)) return '<div class="mwrap"><img class="mimg" src="' + esc(md.src) + '" alt="صورة مرسلة">' + saveBtn + '</div>';
     if (md.type === 'video' && L.isVideoData(md.src)) {
-      return '<video class="mvid" controls playsinline preload="metadata" src="' + esc(md.src) + '" aria-label="فيديو مرسل"></video>';
+      return '<div class="mwrap"><video class="mvid" controls playsinline preload="metadata" src="' + esc(md.src) + '" aria-label="فيديو مرسل"></video>' + saveBtn + '</div>';
     }
     if (md.type === 'audio' && L.isAudioData(md.src)) {
       return '<div class="vm"><button type="button" class="vm-play" data-play="' + m.id + '" aria-label="تشغيل الرسالة الصوتية">' + ic('play') + '</button>' +
         '<div class="vm-bar"><i data-vmbar="' + m.id + '"></i></div>' +
-        '<span class="vm-time" data-vmtime="' + m.id + '">' + L.formatElapsed((md.dur || 0) * 1000) + '</span></div>';
+        '<span class="vm-time" data-vmtime="' + m.id + '">' + L.formatElapsed((md.dur || 0) * 1000) + '</span>' +
+        '<button type="button" class="vm-save" data-save="' + m.id + '" aria-label="حفظ في الجهاز">' + ic('download') + '</button></div>';
     }
     return '';
   }
@@ -2120,6 +2152,12 @@
       if (rt && c) {
         const m = byId(rt.dataset.retry);
         if (m && m.status === 'failed') deliver(c, m);
+        return;
+      }
+      const sv = e.target.closest('[data-save]');
+      if (sv) {
+        const sm = byId(sv.dataset.save);
+        if (sm && sm.media) saveMedia(sm.media.src);
         return;
       }
       const p = e.target.closest('[data-play]');
